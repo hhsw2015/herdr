@@ -1506,6 +1506,335 @@ impl App {
                     result: ResponseResult::LayoutSnapshot { tree },
                 }
             }
+            Method::PaneSetSplitRatio(params) => {
+                let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "tab_not_found".into(),
+                            message: format!("tab {} not found", params.tab_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                if self.public_workspace_id(ws_idx) != params.workspace_id {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "tab_not_found".into(),
+                            message: format!(
+                                "tab {} does not belong to workspace {}",
+                                params.tab_id, params.workspace_id
+                            ),
+                        },
+                    })
+                    .unwrap();
+                }
+                let Some(tab) = self
+                    .state
+                    .workspaces
+                    .get_mut(ws_idx)
+                    .and_then(|ws| ws.tabs.get_mut(tab_idx))
+                else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "tab_not_found".into(),
+                            message: format!("tab {} not found", params.tab_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                if !tab.layout.set_ratio_at(&params.path, params.ratio) {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "split_path_not_found".into(),
+                            message: format!(
+                                "no split at path {:?} in tab {}",
+                                params.path, params.tab_id
+                            ),
+                        },
+                    })
+                    .unwrap();
+                }
+                self.schedule_session_save();
+                if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
+                    self.emit_event(crate::api::schema::EventEnvelope {
+                        event: crate::api::schema::EventKind::LayoutChanged,
+                        data: crate::api::schema::EventData::LayoutChanged { tree },
+                    });
+                }
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::Ok {},
+                }
+            }
+            Method::PaneSwap(params) => {
+                let Some((ws_idx_a, pane_a)) = self.parse_pane_id(&params.a_pane_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.a_pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let Some((ws_idx_b, pane_b)) = self.parse_pane_id(&params.b_pane_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.b_pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                if ws_idx_a != ws_idx_b {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "swap_across_workspaces".into(),
+                            message: "pane.swap requires both panes in the same workspace".into(),
+                        },
+                    })
+                    .unwrap();
+                }
+                let ws_idx = ws_idx_a;
+                let Some(ws) = self.state.workspaces.get(ws_idx) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "workspace_not_found".into(),
+                            message: format!("workspace {} not found", ws_idx),
+                        },
+                    })
+                    .unwrap();
+                };
+                let Some(tab_idx_a) = ws.find_tab_index_for_pane(pane_a) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.a_pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let Some(tab_idx_b) = ws.find_tab_index_for_pane(pane_b) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.b_pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                if tab_idx_a != tab_idx_b {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "swap_across_tabs".into(),
+                            message: "pane.swap requires both panes in the same tab".into(),
+                        },
+                    })
+                    .unwrap();
+                }
+                let tab_idx = tab_idx_a;
+                let ok = self
+                    .state
+                    .workspaces
+                    .get_mut(ws_idx)
+                    .and_then(|ws| ws.tabs.get_mut(tab_idx))
+                    .map(|tab| tab.layout.swap_panes(pane_a, pane_b))
+                    .unwrap_or(false);
+                if !ok {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_swap_failed".into(),
+                            message: "swap rejected (panes identical or missing)".into(),
+                        },
+                    })
+                    .unwrap();
+                }
+                self.schedule_session_save();
+                if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
+                    self.emit_event(crate::api::schema::EventEnvelope {
+                        event: crate::api::schema::EventKind::LayoutChanged,
+                        data: crate::api::schema::EventData::LayoutChanged { tree },
+                    });
+                }
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::Ok {},
+                }
+            }
+            Method::PaneFocus(target) => {
+                let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", target.pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let Some(tab_idx) = self
+                    .state
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| ws.find_tab_index_for_pane(pane_id))
+                else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", target.pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                self.state.switch_workspace(ws_idx);
+                self.state.switch_tab(tab_idx);
+                let focused = self
+                    .state
+                    .workspaces
+                    .get_mut(ws_idx)
+                    .and_then(|ws| ws.tabs.get_mut(tab_idx))
+                    .map(|tab| tab.layout.focus_pane(pane_id))
+                    .unwrap_or(false);
+                if !focused {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found in tab", target.pane_id),
+                        },
+                    })
+                    .unwrap();
+                }
+                self.state.mode = Mode::Terminal;
+                self.sync_focus_events();
+                let pane = self.pane_info(ws_idx, pane_id).unwrap();
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::PaneInfo { pane },
+                }
+            }
+            Method::TabReorder(params) => {
+                let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "workspace_not_found".into(),
+                            message: format!("workspace {} not found", params.workspace_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let Some(ws) = self.state.workspaces.get(ws_idx) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "workspace_not_found".into(),
+                            message: format!("workspace {} not found", params.workspace_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                if params.tab_ids.len() != ws.tabs.len() {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "tab_reorder_invalid".into(),
+                            message: format!(
+                                "expected {} tab ids, got {}",
+                                ws.tabs.len(),
+                                params.tab_ids.len()
+                            ),
+                        },
+                    })
+                    .unwrap();
+                }
+                let mut permutation: Vec<usize> = Vec::with_capacity(params.tab_ids.len());
+                for tab_id in &params.tab_ids {
+                    let Some((parsed_ws_idx, tab_idx)) = self.parse_tab_id(tab_id) else {
+                        return serde_json::to_string(&ErrorResponse {
+                            id: request.id,
+                            error: ErrorBody {
+                                code: "tab_not_found".into(),
+                                message: format!("tab {} not found", tab_id),
+                            },
+                        })
+                        .unwrap();
+                    };
+                    if parsed_ws_idx != ws_idx {
+                        return serde_json::to_string(&ErrorResponse {
+                            id: request.id,
+                            error: ErrorBody {
+                                code: "tab_reorder_invalid".into(),
+                                message: format!(
+                                    "tab {} does not belong to workspace {}",
+                                    tab_id, params.workspace_id
+                                ),
+                            },
+                        })
+                        .unwrap();
+                    }
+                    if permutation.contains(&tab_idx) {
+                        return serde_json::to_string(&ErrorResponse {
+                            id: request.id,
+                            error: ErrorBody {
+                                code: "tab_reorder_invalid".into(),
+                                message: format!("tab {} appears more than once", tab_id),
+                            },
+                        })
+                        .unwrap();
+                    }
+                    permutation.push(tab_idx);
+                }
+                let active_tab_id_before = self.state.workspaces[ws_idx]
+                    .tabs
+                    .get(self.state.workspaces[ws_idx].active_tab)
+                    .map(|t| t.root_pane);
+                let ws = &mut self.state.workspaces[ws_idx];
+                let mut reordered: Vec<crate::workspace::Tab> =
+                    Vec::with_capacity(ws.tabs.len());
+                let mut taken: Vec<Option<crate::workspace::Tab>> =
+                    ws.tabs.drain(..).map(Some).collect();
+                for idx in &permutation {
+                    if let Some(tab) = taken[*idx].take() {
+                        reordered.push(tab);
+                    }
+                }
+                ws.tabs = reordered;
+                if let Some(root_pane) = active_tab_id_before {
+                    if let Some(new_idx) =
+                        ws.tabs.iter().position(|t| t.root_pane == root_pane)
+                    {
+                        ws.active_tab = new_idx;
+                    }
+                }
+                self.schedule_session_save();
+                let new_tab_ids: Vec<String> = (0..self.state.workspaces[ws_idx].tabs.len())
+                    .filter_map(|idx| self.public_tab_id(ws_idx, idx))
+                    .collect();
+                self.emit_event(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::TabReordered,
+                    data: crate::api::schema::EventData::TabReordered {
+                        workspace_id: self.public_workspace_id(ws_idx),
+                        tab_ids: new_tab_ids,
+                    },
+                });
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::Ok {},
+                }
+            }
             Method::PaneClose(target) => {
                 let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
                     return serde_json::to_string(&ErrorResponse {

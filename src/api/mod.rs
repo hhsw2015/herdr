@@ -424,6 +424,10 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneClose(_) => "pane.close",
         Method::PaneResize(_) => "pane.resize",
         Method::LayoutSnapshot(_) => "layout.snapshot",
+        Method::PaneSetSplitRatio(_) => "pane.set_split_ratio",
+        Method::PaneSwap(_) => "pane.swap",
+        Method::PaneFocus(_) => "pane.focus",
+        Method::TabReorder(_) => "tab.reorder",
         Method::EventsSubscribe(_) => "events.subscribe",
         Method::EventsWait(_) => "events.wait",
         Method::PaneWaitForOutput(_) => "pane.wait_for_output",
@@ -798,6 +802,14 @@ impl ActiveSubscription {
             })),
             Subscription::PaneAgentDetected {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneAgentDetected,
+                last_sequence: 0,
+            })),
+            Subscription::LayoutChanged {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::LayoutChanged,
+                last_sequence: 0,
+            })),
+            Subscription::TabReordered {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::TabReordered,
                 last_sequence: 0,
             })),
             Subscription::PaneOutputMatched {

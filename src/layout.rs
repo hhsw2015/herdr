@@ -161,15 +161,35 @@ impl TileLayout {
         }
     }
 
-    pub fn focus_pane(&mut self, id: PaneId) {
+    pub fn focus_pane(&mut self, id: PaneId) -> bool {
         if self.pane_ids().contains(&id) {
             self.focus = id;
+            true
+        } else {
+            false
         }
     }
 
-    /// Set the ratio of a split node at the given path.
-    pub fn set_ratio_at(&mut self, path: &[bool], ratio: f32) {
-        set_ratio_at(&mut self.root, path, ratio.clamp(0.1, 0.9));
+    /// Set the ratio of a split node at the given path. Returns false if
+    /// the path does not point to a split node (e.g. it walks into a leaf
+    /// or runs off the end of the tree).
+    pub fn set_ratio_at(&mut self, path: &[bool], ratio: f32) -> bool {
+        set_ratio_at(&mut self.root, path, ratio.clamp(0.1, 0.9))
+    }
+
+    /// Swap two panes' positions in the BSP tree without disturbing
+    /// splits. Returns false if either pane is missing or both ids are
+    /// the same.
+    pub fn swap_panes(&mut self, a: PaneId, b: PaneId) -> bool {
+        if a == b {
+            return false;
+        }
+        let ids = self.pane_ids();
+        if !ids.contains(&a) || !ids.contains(&b) {
+            return false;
+        }
+        swap_panes(&mut self.root, a, b);
+        true
     }
 
     /// Adjust the nearest split in the given direction for the focused pane.
@@ -419,7 +439,7 @@ fn remove_pane(node: Node, target: PaneId) -> Option<Node> {
     }
 }
 
-fn set_ratio_at(node: &mut Node, path: &[bool], new_ratio: f32) {
+fn set_ratio_at(node: &mut Node, path: &[bool], new_ratio: f32) -> bool {
     if let Node::Split {
         ratio,
         first,
@@ -429,10 +449,29 @@ fn set_ratio_at(node: &mut Node, path: &[bool], new_ratio: f32) {
     {
         if path.is_empty() {
             *ratio = new_ratio;
+            true
         } else if path[0] {
-            set_ratio_at(second, &path[1..], new_ratio);
+            set_ratio_at(second, &path[1..], new_ratio)
         } else {
-            set_ratio_at(first, &path[1..], new_ratio);
+            set_ratio_at(first, &path[1..], new_ratio)
+        }
+    } else {
+        false
+    }
+}
+
+fn swap_panes(node: &mut Node, a: PaneId, b: PaneId) {
+    match node {
+        Node::Pane(id) => {
+            if *id == a {
+                *id = b;
+            } else if *id == b {
+                *id = a;
+            }
+        }
+        Node::Split { first, second, .. } => {
+            swap_panes(first, a, b);
+            swap_panes(second, a, b);
         }
     }
 }
@@ -454,6 +493,58 @@ fn get_ratio_at(node: &Node, path: &[bool]) -> Option<f32> {
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swap_panes_exchanges_two_leaves() {
+        let (mut layout, _root) = TileLayout::new();
+        let p2 = layout.split_focused(Direction::Horizontal);
+        let p3 = layout.split_focused(Direction::Vertical);
+        let ids_before = layout.pane_ids();
+        let _root = ids_before[0];
+        assert!(layout.swap_panes(p2, p3));
+        let ids_after = layout.pane_ids();
+        assert_eq!(ids_after.len(), ids_before.len());
+        assert!(ids_after.contains(&p2));
+        assert!(ids_after.contains(&p3));
+        // Position must have changed - p2 and p3 swap places in tree order.
+        assert_ne!(
+            ids_before.iter().position(|id| *id == p2),
+            ids_after.iter().position(|id| *id == p2)
+        );
+    }
+
+    #[test]
+    fn swap_panes_rejects_unknown_or_identical() {
+        let (mut layout, root) = TileLayout::new();
+        let other = PaneId::from_raw(99_999);
+        assert!(!layout.swap_panes(root, root));
+        assert!(!layout.swap_panes(root, other));
+    }
+
+    #[test]
+    fn set_ratio_at_validates_path() {
+        let (mut layout, _root) = TileLayout::new();
+        layout.split_focused(Direction::Horizontal);
+        assert!(layout.set_ratio_at(&[], 0.7));
+        // Path running off the tree must return false (no split below leaf).
+        assert!(!layout.set_ratio_at(&[false, false], 0.7));
+        // Empty layout (single pane) has no splits so any path fails.
+        let (mut single, _) = TileLayout::new();
+        assert!(!single.set_ratio_at(&[], 0.5));
+    }
+
+    #[test]
+    fn focus_pane_rejects_unknown_id() {
+        let (mut layout, root) = TileLayout::new();
+        let other = PaneId::from_raw(99_999);
+        assert!(layout.focus_pane(root));
+        assert!(!layout.focus_pane(other));
     }
 }
 

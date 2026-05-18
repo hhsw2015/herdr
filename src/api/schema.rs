@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub id: String,
     #[serde(flatten)]
     pub method: Method,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum Method {
     #[serde(rename = "ping")]
@@ -82,6 +82,14 @@ pub enum Method {
     PaneResize(PaneResizeParams),
     #[serde(rename = "layout.snapshot")]
     LayoutSnapshot(LayoutSnapshotParams),
+    #[serde(rename = "pane.set_split_ratio")]
+    PaneSetSplitRatio(PaneSetSplitRatioParams),
+    #[serde(rename = "pane.swap")]
+    PaneSwap(PaneSwapParams),
+    #[serde(rename = "pane.focus")]
+    PaneFocus(PaneTarget),
+    #[serde(rename = "tab.reorder")]
+    TabReorder(TabReorderParams),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(EventsSubscribeParams),
     #[serde(rename = "events.wait")]
@@ -125,6 +133,28 @@ pub struct PaneResizeParams {
 pub struct LayoutSnapshotParams {
     pub workspace_id: String,
     pub tab_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneSetSplitRatioParams {
+    pub workspace_id: String,
+    pub tab_id: String,
+    /// Root-relative path through the BSP tree: `false` = first child,
+    /// `true` = second child. Empty vector targets the root split.
+    pub path: Vec<bool>,
+    pub ratio: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSwapParams {
+    pub a_pane_id: String,
+    pub b_pane_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabReorderParams {
+    pub workspace_id: String,
+    pub tab_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -409,6 +439,10 @@ pub enum Subscription {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_status: Option<AgentStatus>,
     },
+    #[serde(rename = "layout.changed")]
+    LayoutChanged {},
+    #[serde(rename = "tab.reordered")]
+    TabReordered {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,6 +575,8 @@ pub enum EventKind {
     PaneExited,
     PaneAgentDetected,
     PaneAgentStatusChanged,
+    LayoutChanged,
+    TabReordered,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -717,7 +753,7 @@ pub struct IntegrationUninstallResult {
     pub messages: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub event: EventKind,
     pub data: EventData,
@@ -762,7 +798,7 @@ pub struct PaneAgentStatusChangedEvent {
     pub custom_status: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
     WorkspaceCreated {
@@ -826,6 +862,13 @@ pub enum EventData {
         agent_status: AgentStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         custom_status: Option<String>,
+    },
+    LayoutChanged {
+        tree: LayoutTree,
+    },
+    TabReordered {
+        workspace_id: String,
+        tab_ids: Vec<String>,
     },
 }
 
@@ -1282,6 +1325,132 @@ mod tests {
         assert!(json.contains("\"direction\":\"vertical\""));
         let restored: LayoutTree = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, tree);
+    }
+
+    #[test]
+    fn pane_set_split_ratio_request_round_trips() {
+        let json = r#"{
+            "id":"req_ratio",
+            "method":"pane.set_split_ratio",
+            "params":{
+                "workspace_id":"w1",
+                "tab_id":"w1:1",
+                "path":[false,true,false],
+                "ratio":0.65
+            }
+        }"#;
+        let request: Request = serde_json::from_str(json).unwrap();
+        match request.method {
+            Method::PaneSetSplitRatio(params) => {
+                assert_eq!(params.workspace_id, "w1");
+                assert_eq!(params.tab_id, "w1:1");
+                assert_eq!(params.path, vec![false, true, false]);
+                assert!((params.ratio - 0.65).abs() < f32::EPSILON);
+            }
+            other => panic!("wrong method: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pane_swap_request_round_trips() {
+        let request = Request {
+            id: "req_swap".into(),
+            method: Method::PaneSwap(PaneSwapParams {
+                a_pane_id: "w1-1".into(),
+                b_pane_id: "w1-2".into(),
+            }),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"pane.swap\""));
+        let restored: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn pane_focus_request_round_trips() {
+        let request = Request {
+            id: "req_focus".into(),
+            method: Method::PaneFocus(PaneTarget {
+                pane_id: "w1-2".into(),
+            }),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"pane.focus\""));
+        let restored: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn tab_reorder_request_round_trips() {
+        let request = Request {
+            id: "req_reorder".into(),
+            method: Method::TabReorder(TabReorderParams {
+                workspace_id: "w1".into(),
+                tab_ids: vec!["w1:2".into(), "w1:1".into(), "w1:3".into()],
+            }),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"tab.reorder\""));
+        let restored: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn layout_changed_event_round_trips() {
+        let envelope = EventEnvelope {
+            event: EventKind::LayoutChanged,
+            data: EventData::LayoutChanged {
+                tree: LayoutTree {
+                    workspace_id: "w1".into(),
+                    tab_id: "w1:1".into(),
+                    root: LayoutNode::Pane {
+                        pane_id: "w1-1".into(),
+                    },
+                    focused_pane_id: Some("w1-1".into()),
+                },
+            },
+        };
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("\"event\":\"layout_changed\""));
+        assert!(json.contains("\"type\":\"layout_changed\""));
+        let restored: EventEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, envelope);
+    }
+
+    #[test]
+    fn tab_reordered_event_round_trips() {
+        let envelope = EventEnvelope {
+            event: EventKind::TabReordered,
+            data: EventData::TabReordered {
+                workspace_id: "w1".into(),
+                tab_ids: vec!["w1:2".into(), "w1:1".into()],
+            },
+        };
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("\"event\":\"tab_reordered\""));
+        let restored: EventEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, envelope);
+    }
+
+    #[test]
+    fn layout_changed_subscription_parses() {
+        let json = r#"{
+            "id":"req_sub",
+            "method":"events.subscribe",
+            "params":{"subscriptions":[
+                {"type":"layout.changed"},
+                {"type":"tab.reordered"}
+            ]}
+        }"#;
+        let request: Request = serde_json::from_str(json).unwrap();
+        match request.method {
+            Method::EventsSubscribe(params) => {
+                assert_eq!(params.subscriptions.len(), 2);
+                assert!(matches!(params.subscriptions[0], Subscription::LayoutChanged {}));
+                assert!(matches!(params.subscriptions[1], Subscription::TabReordered {}));
+            }
+            other => panic!("wrong method: {other:?}"),
+        }
     }
 
     #[test]
