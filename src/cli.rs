@@ -41,6 +41,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "wait" => run_wait_command(&args[2..])?,
         "integration" => run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
+        "raw-pty-attach" => raw_pty_attach(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 
@@ -1058,6 +1059,52 @@ fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
         Err(code) => return Ok(code),
     };
     crate::client::run_terminal_attach(terminal_id, takeover)?;
+    Ok(0)
+}
+
+fn raw_pty_attach(args: &[String]) -> std::io::Result<i32> {
+    let usage = "usage: herdr raw-pty-attach <terminal_id> [--takeover] [--cols N] [--rows N]";
+    let Some(terminal_id) = args.first() else {
+        eprintln!("{usage}");
+        return Ok(2);
+    };
+    let mut takeover = false;
+    let mut cols: u16 = 80;
+    let mut rows: u16 = 24;
+    let mut idx = 1;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--takeover" => takeover = true,
+            "--cols" => {
+                idx += 1;
+                if let Some(v) = args.get(idx).and_then(|s| s.parse::<u16>().ok()) {
+                    cols = v;
+                } else {
+                    eprintln!("--cols requires a numeric argument");
+                    return Ok(2);
+                }
+            }
+            "--rows" => {
+                idx += 1;
+                if let Some(v) = args.get(idx).and_then(|s| s.parse::<u16>().ok()) {
+                    rows = v;
+                } else {
+                    eprintln!("--rows requires a numeric argument");
+                    return Ok(2);
+                }
+            }
+            "help" | "--help" | "-h" => {
+                eprintln!("{usage}");
+                return Ok(0);
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+        }
+        idx += 1;
+    }
+    crate::client::run_raw_pty_attach(terminal_id.clone(), takeover, cols, rows)?;
     Ok(0)
 }
 
