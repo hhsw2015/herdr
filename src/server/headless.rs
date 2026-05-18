@@ -2510,6 +2510,148 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_pty_input_reaches_pane_runtime() {
+        // Verifies RawPty-encoded clients send keystroke bytes to the
+        // attached pane via the same path TerminalAnsi clients use. If
+        // input flow ever diverges by encoding, this test catches it.
+        let mut server = test_headless_server();
+        let workspace = crate::workspace::Workspace::test_new("raw-input");
+        let pane_id = workspace.tabs[0].root_pane;
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        let (runtime, mut pty_input_rx) =
+            crate::pane::PaneRuntime::test_with_channel(80, 24);
+        server.app.state.insert_test_runtime(pane_id, runtime);
+        let real_terminal_id = server.app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("pane")
+            .attached_terminal_id
+            .clone();
+        let terminal_id = real_terminal_id.to_string();
+
+        let (writer, _control_rx, _render_rx) = test_client_writer();
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 21,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding: RenderEncoding::RawPty,
+            writer,
+        }));
+        assert!(
+            server.handle_server_event(ServerEvent::ClientAttachTerminal {
+                client_id: 21,
+                terminal_id: terminal_id.clone(),
+                takeover: false,
+            })
+        );
+
+        let payload = b"hello\r".to_vec();
+        assert!(server.handle_server_event(ServerEvent::ClientInput {
+            client_id: 21,
+            data: payload.clone(),
+        }));
+        let received = pty_input_rx
+            .try_recv()
+            .expect("PTY runtime should receive client input bytes");
+        assert_eq!(received.as_ref(), payload.as_slice());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_pty_resize_reaches_pane_runtime() {
+        // ClientResize for a RawPty-attached client should call
+        // runtime.resize() the same as for any other attach mode.
+        // We assert behavior via the public handle_server_event return
+        // value (true = handled and returned early in the attach branch).
+        let mut server = test_headless_server();
+        let workspace = crate::workspace::Workspace::test_new("raw-resize");
+        let pane_id = workspace.tabs[0].root_pane;
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        server.app.state.insert_test_runtime(pane_id, runtime);
+        let terminal_id = server.app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("pane")
+            .attached_terminal_id
+            .to_string();
+
+        let (writer, _control_rx, _render_rx) = test_client_writer();
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 31,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding: RenderEncoding::RawPty,
+            writer,
+        }));
+        assert!(
+            server.handle_server_event(ServerEvent::ClientAttachTerminal {
+                client_id: 31,
+                terminal_id: terminal_id.clone(),
+                takeover: false,
+            })
+        );
+
+        // Resize should be handled (return true via the attach branch
+        // before the shared runtime path).
+        let handled = server.handle_server_event(ServerEvent::ClientResize {
+            client_id: 31,
+            cols: 132,
+            rows: 50,
+            cell_width_px: 8,
+            cell_height_px: 16,
+        });
+        assert!(handled);
+        let client = server.clients.get(&31).expect("client");
+        assert_eq!(client.terminal_size, (132, 50));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_pty_client_exits_when_attached_pane_dies() {
+        // Mirrors terminal_attach_client_exits_when_attached_pane_dies
+        // but for RawPty encoding. Ensures lifecycle cleanup is
+        // encoding-agnostic.
+        let mut server = test_headless_server();
+        let workspace = crate::workspace::Workspace::test_new("raw-die");
+        let pane_id = workspace.tabs[0].root_pane;
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        let terminal_id = server.app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("pane")
+            .attached_terminal_id
+            .to_string();
+
+        let (writer, _control_rx, _render_rx) = test_client_writer();
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 41,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding: RenderEncoding::RawPty,
+            writer,
+        }));
+        assert!(
+            server.handle_server_event(ServerEvent::ClientAttachTerminal {
+                client_id: 41,
+                terminal_id: terminal_id.clone(),
+                takeover: false,
+            })
+        );
+        assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&41));
+
+        assert!(
+            server.handle_internal_event_with_forwarding(AppEvent::PaneDied { pane_id })
+        );
+        assert!(!server.clients.contains_key(&41));
+        assert!(!server.terminal_attach_owners.contains_key(&terminal_id));
+    }
+
     #[test]
     fn terminal_attach_client_exits_when_attached_pane_dies() {
         let mut server = test_headless_server();
