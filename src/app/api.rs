@@ -1466,6 +1466,46 @@ impl App {
                     result: ResponseResult::Ok {},
                 }
             }
+            Method::LayoutSnapshot(params) => {
+                let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "tab_not_found".into(),
+                            message: format!("tab {} not found", params.tab_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let expected_workspace_id = self.public_workspace_id(ws_idx);
+                if expected_workspace_id != params.workspace_id {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "tab_not_found".into(),
+                            message: format!(
+                                "tab {} does not belong to workspace {}",
+                                params.tab_id, params.workspace_id
+                            ),
+                        },
+                    })
+                    .unwrap();
+                }
+                let Some(tree) = self.layout_tree(ws_idx, tab_idx) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "tab_not_found".into(),
+                            message: format!("tab {} not found", params.tab_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::LayoutSnapshot { tree },
+                }
+            }
             Method::PaneClose(target) => {
                 let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
                     return serde_json::to_string(&ErrorResponse {

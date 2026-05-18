@@ -80,6 +80,8 @@ pub enum Method {
     PaneClose(PaneTarget),
     #[serde(rename = "pane.resize")]
     PaneResize(PaneResizeParams),
+    #[serde(rename = "layout.snapshot")]
+    LayoutSnapshot(LayoutSnapshotParams),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(EventsSubscribeParams),
     #[serde(rename = "events.wait")]
@@ -117,6 +119,42 @@ pub struct PaneResizeParams {
     pub cell_width_px: u32,
     #[serde(default)]
     pub cell_height_px: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutSnapshotParams {
+    pub workspace_id: String,
+    pub tab_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutSplitDirection {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LayoutNode {
+    Pane {
+        pane_id: String,
+    },
+    Split {
+        direction: LayoutSplitDirection,
+        ratio: f32,
+        first: Box<LayoutNode>,
+        second: Box<LayoutNode>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutTree {
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub root: LayoutNode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -505,7 +543,7 @@ pub enum EventKind {
     PaneAgentStatusChanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuccessResponse {
     pub id: String,
     pub result: ResponseResult,
@@ -523,7 +561,7 @@ pub struct ErrorBody {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseResult {
     Pong {
@@ -569,6 +607,9 @@ pub enum ResponseResult {
     },
     PaneRead {
         read: PaneReadResult,
+    },
+    LayoutSnapshot {
+        tree: LayoutTree,
     },
     SubscriptionStarted {},
     WaitMatched {
@@ -1193,5 +1234,74 @@ mod tests {
                 agent_status: AgentStatus::Done,
             }
         );
+    }
+
+    #[test]
+    fn layout_snapshot_request_round_trips() {
+        let request = Request {
+            id: "req_layout".into(),
+            method: Method::LayoutSnapshot(LayoutSnapshotParams {
+                workspace_id: "w64e95948145ed1".into(),
+                tab_id: "w64e95948145ed1:1".into(),
+            }),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"layout.snapshot\""));
+        let restored: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn layout_tree_serializes_pane_and_split_nodes() {
+        let tree = LayoutTree {
+            workspace_id: "w1".into(),
+            tab_id: "w1:1".into(),
+            root: LayoutNode::Split {
+                direction: LayoutSplitDirection::Horizontal,
+                ratio: 0.5,
+                first: Box::new(LayoutNode::Pane {
+                    pane_id: "w1-1".into(),
+                }),
+                second: Box::new(LayoutNode::Split {
+                    direction: LayoutSplitDirection::Vertical,
+                    ratio: 0.6,
+                    first: Box::new(LayoutNode::Pane {
+                        pane_id: "w1-2".into(),
+                    }),
+                    second: Box::new(LayoutNode::Pane {
+                        pane_id: "w1-3".into(),
+                    }),
+                }),
+            },
+            focused_pane_id: Some("w1-2".into()),
+        };
+        let json = serde_json::to_string(&tree).unwrap();
+        assert!(json.contains("\"kind\":\"split\""));
+        assert!(json.contains("\"kind\":\"pane\""));
+        assert!(json.contains("\"direction\":\"horizontal\""));
+        assert!(json.contains("\"direction\":\"vertical\""));
+        let restored: LayoutTree = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, tree);
+    }
+
+    #[test]
+    fn layout_snapshot_response_round_trips() {
+        let response = SuccessResponse {
+            id: "req_layout".into(),
+            result: ResponseResult::LayoutSnapshot {
+                tree: LayoutTree {
+                    workspace_id: "w1".into(),
+                    tab_id: "w1:1".into(),
+                    root: LayoutNode::Pane {
+                        pane_id: "w1-1".into(),
+                    },
+                    focused_pane_id: Some("w1-1".into()),
+                },
+            },
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"type\":\"layout_snapshot\""));
+        let restored: SuccessResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, response);
     }
 }

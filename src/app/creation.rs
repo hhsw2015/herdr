@@ -239,6 +239,23 @@ impl App {
         self.pane_info(ws_idx, tab.root_pane)
     }
 
+    pub(super) fn layout_tree(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> Option<crate::api::schema::LayoutTree> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let tab = ws.tabs.get(tab_idx)?;
+        let root = layout_node_to_wire(self, ws_idx, tab.layout.root())?;
+        let focused_pane_id = self.public_pane_id(ws_idx, tab.layout.focused());
+        Some(crate::api::schema::LayoutTree {
+            workspace_id: self.public_workspace_id(ws_idx),
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            root,
+            focused_pane_id,
+        })
+    }
+
     pub(super) fn pane_info(
         &self,
         ws_idx: usize,
@@ -305,6 +322,36 @@ impl App {
                 .public_tab_id(index, ws.active_tab)
                 .unwrap_or_else(|| format!("{}:{}", ws.id, ws.active_tab + 1)),
             agent_status: pane_agent_status(agg_state, seen),
+        }
+    }
+}
+
+fn layout_node_to_wire(
+    app: &App,
+    ws_idx: usize,
+    node: &crate::layout::Node,
+) -> Option<crate::api::schema::LayoutNode> {
+    use crate::api::schema::{LayoutNode, LayoutSplitDirection};
+    match node {
+        crate::layout::Node::Pane(pane_id) => Some(LayoutNode::Pane {
+            pane_id: app.public_pane_id(ws_idx, *pane_id)?,
+        }),
+        crate::layout::Node::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let direction = match direction {
+                ratatui::layout::Direction::Horizontal => LayoutSplitDirection::Horizontal,
+                ratatui::layout::Direction::Vertical => LayoutSplitDirection::Vertical,
+            };
+            Some(LayoutNode::Split {
+                direction,
+                ratio: *ratio,
+                first: Box::new(layout_node_to_wire(app, ws_idx, first)?),
+                second: Box::new(layout_node_to_wire(app, ws_idx, second)?),
+            })
         }
     }
 }
