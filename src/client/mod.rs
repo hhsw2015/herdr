@@ -702,6 +702,11 @@ async fn run_client_loop(
                 ServerMessage::Welcome { .. } => {
                     debug!("received unexpected Welcome in main loop");
                 }
+                ServerMessage::RawPtyChunk { .. } => {
+                    // The TUI client never negotiates RawPty. Receiving one
+                    // here means the server misrouted; ignore.
+                    debug!("received unexpected RawPtyChunk in main loop");
+                }
             },
             ClientLoopEvent::ServerDisconnected => {
                 return Err(ClientError::ConnectionLost(io::Error::new(

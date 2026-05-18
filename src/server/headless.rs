@@ -1317,10 +1317,75 @@ impl HeadlessServer {
             .state
             .direct_attach_resize_locks
             .insert(real_terminal_id.clone());
+        let is_raw_pty = self
+            .clients
+            .get(&client_id)
+            .map(|c| c.render_state.is_raw_pty())
+            .unwrap_or(false);
+        let raw_pty_rx = if is_raw_pty {
+            self.app
+                .state
+                .terminal_runtimes
+                .get(&real_terminal_id)
+                .map(|r| r.subscribe_raw_pty())
+        } else {
+            None
+        };
         if let Some(runtime) = self.app.state.terminal_runtimes.get(&real_terminal_id) {
             runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
         }
+        if let Some(rx) = raw_pty_rx {
+            self.spawn_raw_pty_forwarder(client_id, rx);
+        }
         true
+    }
+
+    /// Spawn a tokio task that forwards raw PTY bytes via a broadcast
+    /// receiver to the given client's control channel as
+    /// `ServerMessage::RawPtyChunk` frames. Task exits when the broadcast
+    /// closes (pane gone) or the client's writer drops.
+    fn spawn_raw_pty_forwarder(
+        &mut self,
+        client_id: u64,
+        mut rx: tokio::sync::broadcast::Receiver<bytes::Bytes>,
+    ) {
+        let Some(writer) = self
+            .clients
+            .get(&client_id)
+            .and_then(|c| c.writer.as_ref().cloned())
+        else {
+            return;
+        };
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(bytes) => {
+                        let msg = ServerMessage::RawPtyChunk {
+                            bytes: bytes.to_vec(),
+                        };
+                        let serialized = match HeadlessServer::frame_server_message(&msg) {
+                            Ok(framed) => framed,
+                            Err(err) => {
+                                debug!(client_id, err = %err, "raw pty frame serialize failed");
+                                break;
+                            }
+                        };
+                        if writer.control.send(serialized).is_err() {
+                            debug!(client_id, "raw pty client writer closed");
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        debug!(client_id, skipped, "raw pty subscriber lagged");
+                        // resync: continue from next available chunk
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        debug!(client_id, "raw pty broadcast closed (pane gone)");
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     /// Handles a server event. Returns true if the event requires a re-render.
@@ -1778,7 +1843,10 @@ impl HeadlessServer {
         let mut render_targets: Vec<RenderTarget> = self
             .clients
             .iter()
-            .filter(|(_, client)| client.writer.is_some())
+            // RawPty-encoded clients receive raw PTY bytes via a dedicated
+            // forwarder task (see spawn_raw_pty_forwarder); they do not
+            // participate in the frame render pipeline.
+            .filter(|(_, client)| client.writer.is_some() && !client.render_state.is_raw_pty())
             .map(|(&client_id, client)| {
                 (
                     client_id,
@@ -2346,6 +2414,100 @@ mod tests {
             reason,
             Some("terminal attach failed: terminal term_missing not found".to_owned())
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_pty_attach_forwards_raw_bytes_to_client() {
+        let mut server = test_headless_server();
+        let workspace = crate::workspace::Workspace::test_new("raw");
+        let pane_id = workspace.tabs[0].root_pane;
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        server.app.state.insert_test_runtime(pane_id, runtime);
+        let real_terminal_id = server.app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("pane")
+            .attached_terminal_id
+            .clone();
+        let terminal_id = real_terminal_id.to_string();
+
+        let (writer, control_rx, _render_rx) = test_client_writer();
+
+        // Client connects with RawPty encoding.
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 11,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding: RenderEncoding::RawPty,
+            writer,
+        }));
+        assert!(
+            server
+                .clients
+                .get(&11)
+                .expect("client")
+                .render_state
+                .is_raw_pty(),
+            "client should be marked RawPty"
+        );
+
+        // Attach to the pane's terminal. This should spawn the raw forwarder.
+        assert!(
+            server.handle_server_event(ServerEvent::ClientAttachTerminal {
+                client_id: 11,
+                terminal_id: terminal_id.clone(),
+                takeover: false,
+            })
+        );
+        assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&11));
+
+        // Inject raw bytes including a CSI escape sequence.
+        let payload: bytes::Bytes =
+            bytes::Bytes::from_static(b"\x1b[1;31mRED\x1b[0m\nplain\r\n");
+        let runtime = server
+            .app
+            .state
+            .terminal_runtimes
+            .get(&real_terminal_id)
+            .expect("runtime");
+        // Forwarder task subscribes lazily; yield once so it observes
+        // the injection. Retry a few times to cover the spawn handshake.
+        let mut subs = 0usize;
+        for _ in 0..50 {
+            subs = runtime.send_raw_pty_for_test(payload.clone());
+            if subs > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert!(subs >= 1, "forwarder should have subscribed to raw tap");
+
+        // Forwarder runs on a tokio task; give it a chance to push the
+        // serialized message to the control channel.
+        let mut received: Option<Vec<u8>> = None;
+        for _ in 0..50 {
+            if let Ok(bytes) = control_rx.try_recv() {
+                received = Some(bytes);
+                break;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        let bytes = received.expect("client should receive a forwarded frame");
+        match read_server_message(bytes) {
+            ServerMessage::RawPtyChunk { bytes } => {
+                assert_eq!(
+                    bytes.as_slice(),
+                    payload.as_ref(),
+                    "raw bytes must be byte-for-byte identical (escape codes intact)"
+                );
+            }
+            other => panic!("expected RawPtyChunk, got {other:?}"),
+        }
     }
 
     #[test]

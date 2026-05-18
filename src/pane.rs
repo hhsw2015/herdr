@@ -8,7 +8,7 @@ use std::sync::{
 use bytes::Bytes;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use ratatui::{layout::Rect, Frame};
-use tokio::sync::{mpsc, watch, Notify};
+use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tracing::{debug, error, info, warn};
 
 use crate::detect::{Agent, AgentState};
@@ -167,6 +167,11 @@ pub struct PaneRuntime {
     kitty_keyboard_flags: Arc<AtomicU16>,
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
+    /// Broadcasts raw PTY-master byte chunks to subscribed RawPty clients.
+    /// Created lazily but kept alive for the runtime's lifetime so subscribers
+    /// added after spawn() see future bytes. Capacity bounded — slow consumers
+    /// see broadcast::error::RecvError::Lagged and resync.
+    raw_pty_tx: broadcast::Sender<Bytes>,
     // Task handles for deterministic shutdown
     detect_handle: tokio::task::AbortHandle,
 }
@@ -393,6 +398,11 @@ impl PaneRuntime {
         // --- Writer channel ---
         let (input_tx, mut input_rx) = mpsc::channel::<Bytes>(32);
 
+        // --- Raw PTY broadcast tap (for RawPty-encoded clients that bypass
+        // the internal emulator). Capacity 256 chunks; slow consumers see
+        // RecvError::Lagged and resync from the next available chunk.
+        let (raw_pty_tx, _) = broadcast::channel::<Bytes>(256);
+
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
         let mut terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes)
@@ -458,6 +468,7 @@ impl PaneRuntime {
             let render_dirty = render_dirty.clone();
             let child_pid = child_pid.clone();
             let events = events.clone();
+            let raw_pty_tx_reader = raw_pty_tx.clone();
             let rt = tokio::runtime::Handle::current();
             tokio::task::spawn_blocking(move || {
                 let mut buf = [0u8; 8192];
@@ -469,6 +480,13 @@ impl PaneRuntime {
                             break;
                         }
                         Ok(n) => {
+                            // Fan out raw PTY bytes to RawPty-encoded subscribers
+                            // BEFORE the emulator processes them. send() returns
+                            // Err only when there are zero subscribers — fine to
+                            // ignore (broadcast tap is opportunistic).
+                            let _ = raw_pty_tx_reader
+                                .send(Bytes::copy_from_slice(&buf[..n]));
+
                             let shell_pid = child_pid.load(Ordering::Acquire);
                             let result = terminal.process_pty_bytes(
                                 pane_id,
@@ -757,8 +775,23 @@ impl PaneRuntime {
             kitty_keyboard_flags,
             detect_reset_notify,
             pending_release,
+            raw_pty_tx,
             detect_handle,
         })
+    }
+
+    /// Subscribe to raw PTY bytes from this pane's master fd. Used by
+    /// RawPty-encoded clients that want to bypass herdr's internal emulator.
+    /// Slow consumers receive `RecvError::Lagged` and should resync.
+    pub fn subscribe_raw_pty(&self) -> broadcast::Receiver<Bytes> {
+        self.raw_pty_tx.subscribe()
+    }
+
+    /// Inject bytes onto the raw PTY broadcast tap for testing the
+    /// RawPty forwarder path without a real PTY.
+    #[cfg(test)]
+    pub(crate) fn send_raw_pty_for_test(&self, bytes: Bytes) -> usize {
+        self.raw_pty_tx.send(bytes).unwrap_or(0)
     }
 
     pub fn begin_graceful_release(&self, agent: Agent) {
@@ -1051,6 +1084,7 @@ impl PaneRuntime {
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
                 detect_reset_notify: Arc::new(Notify::new()),
                 pending_release: Arc::new(Mutex::new(None)),
+                raw_pty_tx: broadcast::channel::<Bytes>(16).0,
                 detect_handle: tokio::spawn(async {}).abort_handle(),
             },
             rx,
@@ -1134,6 +1168,7 @@ mod tests {
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
+            raw_pty_tx: broadcast::channel::<Bytes>(16).0,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 
@@ -1158,6 +1193,7 @@ mod tests {
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
+            raw_pty_tx: broadcast::channel::<Bytes>(16).0,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 
