@@ -48,6 +48,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneClearAgentAuthority(_)
             | Method::PaneReleaseAgent(_)
             | Method::PaneClose(_)
+            | Method::PaneResize(_)
     )
 }
 
@@ -421,6 +422,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneClearAgentAuthority(_) => "pane.clear_agent_authority",
         Method::PaneReleaseAgent(_) => "pane.release_agent",
         Method::PaneClose(_) => "pane.close",
+        Method::PaneResize(_) => "pane.resize",
         Method::EventsSubscribe(_) => "events.subscribe",
         Method::EventsWait(_) => "events.wait",
         Method::PaneWaitForOutput(_) => "pane.wait_for_output",

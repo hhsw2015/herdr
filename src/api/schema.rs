@@ -78,6 +78,8 @@ pub enum Method {
     PaneReleaseAgent(PaneReleaseAgentParams),
     #[serde(rename = "pane.close")]
     PaneClose(PaneTarget),
+    #[serde(rename = "pane.resize")]
+    PaneResize(PaneResizeParams),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(EventsSubscribeParams),
     #[serde(rename = "events.wait")]
@@ -104,6 +106,17 @@ pub struct WorkspaceTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTarget {
     pub pane_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneResizeParams {
+    pub pane_id: String,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub cell_width_px: u32,
+    #[serde(default)]
+    pub cell_height_px: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
