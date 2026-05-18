@@ -42,6 +42,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "integration" => run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
         "raw-pty-attach" => raw_pty_attach(&args[2..])?,
+        "api-bridge" => api_bridge(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 
@@ -1059,6 +1060,96 @@ fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
         Err(code) => return Ok(code),
     };
     crate::client::run_terminal_attach(terminal_id, takeover)?;
+    Ok(0)
+}
+
+fn api_bridge(args: &[String]) -> std::io::Result<i32> {
+    // Bridge stdin <-> the active herdr API socket. Designed to be
+    // exec'd over `ssh host herdr-cmux api-bridge` so a remote client
+    // can talk JSON-RPC to a herdr daemon without a direct UDS path.
+    //
+    // Optional --session NAME selects an alternate session (default:
+    // active session, matching `herdr` CLI behavior).
+    use std::io::{self, Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::thread;
+
+    // `--session NAME` is consumed by `session::configure_from_args`
+    // in main() before we run, and surfaces via the HERDR_SESSION env
+    // var. `active_api_socket_path()` honors both that env var and
+    // HERDR_SOCKET_PATH (for explicit-path overrides). Reject any
+    // remaining flag args so typos don't silently fall through to a
+    // default socket.
+    let usage = "usage: herdr api-bridge\n\
+                 (use --session NAME globally or HERDR_SOCKET_PATH for non-default sockets)";
+    if let Some(arg) = args.first() {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                eprintln!("{usage}");
+                return Ok(0);
+            }
+            other => {
+                eprintln!("api-bridge: unexpected arg {other}");
+                eprintln!("{usage}");
+                return Ok(2);
+            }
+        }
+    }
+
+    let socket_path = crate::session::active_api_socket_path();
+    let stream = match UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "api-bridge: connect {} failed: {e}",
+                socket_path.display()
+            );
+            return Ok(1);
+        }
+    };
+    let mut stream_read = stream
+        .try_clone()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone: {e}")))?;
+    let mut stream_write = stream;
+
+    // Pipe stdin -> UDS in a background thread so the main thread can
+    // drain UDS -> stdout. Either side closing tears down the bridge.
+    let stdin_handle = thread::spawn(move || -> io::Result<()> {
+        let mut stdin = io::stdin().lock();
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = stdin.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            stream_write.write_all(&buf[..n])?;
+            stream_write.flush()?;
+        }
+        // Close write half so the daemon sees EOF on its read side.
+        let _ = stream_write.shutdown(std::net::Shutdown::Write);
+        Ok(())
+    });
+
+    // UDS -> stdout in main thread.
+    let mut stdout = io::stdout().lock();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match stream_read.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("api-bridge: uds read: {e}");
+                break;
+            }
+        };
+        if stdout.write_all(&buf[..n]).is_err() {
+            break;
+        }
+        if stdout.flush().is_err() {
+            break;
+        }
+    }
+    let _ = stdin_handle.join();
     Ok(0)
 }
 
