@@ -137,7 +137,7 @@ not a gui window, not a web dashboard, not electron. herdr runs inside whatever 
 - **tabs** — first-class in the socket api and cli
 - **mouse-native** — click panes/tabs/workspaces/agents, drag borders, select text to copy, right-click menus; not keyboard-only
 - **notifications** — sounds and toasts for background events; tab-aware suppression
-- **17 built-in themes** — catppuccin, tokyo night, gruvbox, one, solarized, kanagawa, rosé pine, vesper, and light variants for the main palettes
+- **18 built-in themes** — catppuccin, terminal, tokyo night, gruvbox, one, solarized, kanagawa, rosé pine, vesper, and light variants for the main palettes
 - **session persistence** — pane processes survive client detach; sessions restore after full restart
 
 ## agents can use herdr too
@@ -178,6 +178,7 @@ automatic detection works out of the box. process name matching plus terminal ou
 | [amp](https://ampcode.com) | ✓ | ✓ | ✓ |
 | [opencode](https://github.com/anomalyco/opencode) | ✓ | ✓ | ✓ |
 | [grok cli](https://x.ai/grok) | ✓ | ✓ | ✓ |
+| [hermes agent](https://github.com/NousResearch/hermes-agent) | ✓ | ✓ | ✓ |
 
 detected but not fully tested: gemini cli, cursor agent, cline, kimi, github copilot cli.
 
@@ -185,13 +186,14 @@ for agents outside the built-in list, herdr still works as a terminal multiplexe
 
 ### direct integrations
 
-the built-in pi, claude code, codex, and opencode integrations forward semantic state to herdr over the socket api. install with:
+the built-in pi, claude code, codex, opencode, and hermes integrations forward semantic state to herdr over the socket api. install with:
 
 ```bash
 herdr integration install pi
 herdr integration install claude
 herdr integration install codex
 herdr integration install opencode
+herdr integration install hermes
 ```
 
 see [`INTEGRATIONS.md`](./INTEGRATIONS.md) for setup details.
@@ -263,7 +265,7 @@ full logging and environment variable details: [`CONFIGURATION.md`](./CONFIGURAT
 ## docs
 
 - [`CONFIGURATION.md`](./CONFIGURATION.md) — keybindings, themes, notifications, environment variables
-- [`INTEGRATIONS.md`](./INTEGRATIONS.md) — pi, claude code, codex, opencode integrations
+- [`INTEGRATIONS.md`](./INTEGRATIONS.md) — pi, claude code, codex, opencode, hermes integrations
 - [`SKILL.md`](./SKILL.md) — reusable agent skill
 - [`SOCKET_API.md`](./SOCKET_API.md) — socket protocol and cli reference
 

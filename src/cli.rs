@@ -1765,11 +1765,11 @@ fn parse_integration_target(
     action: &str,
 ) -> std::io::Result<Option<IntegrationTarget>> {
     let Some(target) = args.first().map(|arg| arg.as_str()) else {
-        eprintln!("usage: herdr integration {action} <pi|claude|codex|opencode>");
+        eprintln!("usage: herdr integration {action} <pi|claude|codex|opencode|hermes>");
         return Ok(None);
     };
     if args.len() != 1 {
-        eprintln!("usage: herdr integration {action} <pi|claude|codex|opencode>");
+        eprintln!("usage: herdr integration {action} <pi|claude|codex|opencode|hermes>");
         return Ok(None);
     }
 
@@ -1778,9 +1778,10 @@ fn parse_integration_target(
         "claude" => IntegrationTarget::Claude,
         "codex" => IntegrationTarget::Codex,
         "opencode" => IntegrationTarget::Opencode,
+        "hermes" => IntegrationTarget::Hermes,
         _ => {
             eprintln!("unknown integration target: {target}");
-            eprintln!("currently supported: pi, claude, codex, opencode");
+            eprintln!("currently supported: pi, claude, codex, opencode, hermes");
             return Ok(None);
         }
     };
@@ -2241,7 +2242,10 @@ fn print_agent_help() {
     eprintln!("  herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!("  herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
-    eprintln!("  targets accept terminal ids, unique agent names, and legacy pane ids");
+    eprintln!("  targets accept terminal ids, unique agent names, detected/reported agent labels, and legacy pane ids");
+    eprintln!(
+        "  agent send writes literal text; use pane run when you want command text plus Enter"
+    );
 }
 
 fn print_terminal_help() {
@@ -2280,6 +2284,7 @@ fn print_integration_help() {
     eprintln!("  herdr integration install claude");
     eprintln!("  herdr integration install codex");
     eprintln!("  herdr integration install opencode");
+    eprintln!("  herdr integration install hermes");
     eprintln!("  herdr integration uninstall pi");
     eprintln!("  herdr integration uninstall claude");
     eprintln!("  herdr integration uninstall codex");
