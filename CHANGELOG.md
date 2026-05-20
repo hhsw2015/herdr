@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## [0.5.12-cmux2] - 2026-05-20
+
+### Added
+- TUI mutations (split, close, focus, navigate, cycle, resize, swap, switch_workspace, switch_tab) now buffer pending API events for `App::tick` to emit, so external clients (cmux, headless API consumers) stay in sync with herdr's TUI in real time.
+
+### Fixed
+- `Version::parse` tolerates `-cmux*` prerelease suffixes so the saved release-notes preview check succeeds for fork builds.
+- API daemon: every JSON-RPC call now uses a fresh one-shot socket connection (matching the daemon's one-line-per-connection protocol), eliminating the EPIPE storm that hit cmux on second/third request.
+
+### Changed
+- CI matrix dropped macOS leg; the macOS GitHub runner deadlocks `client_mode` integration tests for 45+ minutes. Linux remains the only deploy target for the cmux remote-workspace daemon.
+
 ## [0.5.12-cmux1] - 2026-05-20
 
 ### Added
