@@ -486,11 +486,7 @@ pub fn run_raw_pty_attach(
     // Main thread: pull RawPtyChunk (and other) frames from the socket
     // and dump bytes to stdout. ServerShutdown ends the loop.
     let mut stdout = io::stdout().lock();
-    loop {
-        let msg: ServerMessage = match protocol::read_message(&mut stream, MAX_FRAME_SIZE) {
-            Ok(m) => m,
-            Err(_) => break,
-        };
+    while let Ok(msg) = protocol::read_message::<ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
         match msg {
             ServerMessage::RawPtyChunk { bytes } => {
                 if stdout.write_all(&bytes).is_err() {

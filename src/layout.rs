@@ -496,6 +496,27 @@ fn get_ratio_at(node: &Node, path: &[bool]) -> Option<f32> {
     }
 }
 
+fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
+    match direction {
+        Direction::Horizontal => {
+            let first_w = ((area.width as f32) * ratio).round() as u16;
+            let second_w = area.width.saturating_sub(first_w);
+            (
+                Rect::new(area.x, area.y, first_w, area.height),
+                Rect::new(area.x + first_w, area.y, second_w, area.height),
+            )
+        }
+        Direction::Vertical => {
+            let first_h = ((area.height as f32) * ratio).round() as u16;
+            let second_h = area.height.saturating_sub(first_h);
+            (
+                Rect::new(area.x, area.y, area.width, first_h),
+                Rect::new(area.x, area.y + first_h, area.width, second_h),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,26 +566,5 @@ mod tests {
         let other = PaneId::from_raw(99_999);
         assert!(layout.focus_pane(root));
         assert!(!layout.focus_pane(other));
-    }
-}
-
-fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
-    match direction {
-        Direction::Horizontal => {
-            let first_w = ((area.width as f32) * ratio).round() as u16;
-            let second_w = area.width.saturating_sub(first_w);
-            (
-                Rect::new(area.x, area.y, first_w, area.height),
-                Rect::new(area.x + first_w, area.y, second_w, area.height),
-            )
-        }
-        Direction::Vertical => {
-            let first_h = ((area.height as f32) * ratio).round() as u16;
-            let second_h = area.height.saturating_sub(first_h);
-            (
-                Rect::new(area.x, area.y, area.width, first_h),
-                Rect::new(area.x, area.y + first_h, area.width, second_h),
-            )
-        }
     }
 }
