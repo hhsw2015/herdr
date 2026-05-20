@@ -343,6 +343,8 @@ impl App {
             request_new_workspace: false,
             request_new_tab: false,
             request_reload_config: false,
+            pending_events: Vec::new(),
+            pending_layout_changes: Vec::new(),
             request_client_sound_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -521,6 +523,10 @@ impl App {
             if self.drain_internal_events() {
                 needs_render = true;
             }
+            // Forward TUI-queued mutation events into the API event hub
+            // so external subscribers (cmux, etc.) see the same changes
+            // a TUI user just made.
+            self.drain_pending_state_events();
             if self.drain_api_requests() {
                 needs_render = true;
             }

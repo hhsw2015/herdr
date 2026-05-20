@@ -282,10 +282,7 @@ impl AppState {
                         .map(|ws_ref| ws_ref.active_tab_index());
                     if let Some(tab_idx) = tab_idx {
                         if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
-                            self.emit_event(crate::api::schema::EventEnvelope {
-                                event: crate::api::schema::EventKind::LayoutChanged,
-                                data: crate::api::schema::EventData::LayoutChanged { tree },
-                            });
+                            self.pending_layout_changes.push((ws_idx, tab_idx));
                         }
                     }
                 }

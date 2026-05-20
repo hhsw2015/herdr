@@ -907,6 +907,17 @@ pub struct AppState {
     pub request_new_workspace: bool,
     pub request_new_tab: bool,
     pub request_reload_config: bool,
+    /// Events queued by TUI mutations (split_pane, close_pane,
+    /// switch_workspace, etc.) that the App tick later drains into
+    /// `event_hub`. Lets actions.rs / input dispatch broadcast
+    /// changes to API subscribers (cmux) without holding a reference
+    /// to the EventHub itself, which lives on App. Simple-payload
+    /// events go here; layout-tree events use `pending_layout_changes`
+    /// because tree construction needs App-level helpers.
+    pub pending_events: Vec<crate::api::schema::EventEnvelope>,
+    /// (ws_idx, tab_idx) pairs whose LayoutTree should be sampled and
+    /// broadcast on the next App tick.
+    pub pending_layout_changes: Vec<(usize, usize)>,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
     pub request_client_sound_config_reload: bool,
@@ -996,6 +1007,23 @@ pub struct AppState {
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
+    }
+
+    /// Same shape as App's public_workspace_id but operates on the
+    /// raw state. TUI mutation paths need this when constructing
+    /// outbound event envelopes for the App tick to drain.
+    pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> String {
+        self.workspaces[ws_idx].id.clone()
+    }
+
+    pub(crate) fn public_pane_id(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<String> {
+        let ws = self.workspaces.get(ws_idx)?;
+        let pane_number = ws.public_pane_number(pane_id)?;
+        Some(format!("{}-{pane_number}", ws.id))
     }
 
     pub fn sound_enabled(&self) -> bool {
@@ -1151,6 +1179,8 @@ impl AppState {
             request_new_workspace: false,
             request_new_tab: false,
             request_reload_config: false,
+            pending_events: Vec::new(),
+            pending_layout_changes: Vec::new(),
             request_client_sound_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,

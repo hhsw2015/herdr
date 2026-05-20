@@ -122,7 +122,7 @@ impl AppState {
             self.mark_session_dirty();
             // Mirror api.rs `workspace.focus`: broadcast so external
             // subscribers (cmux) follow the focus into the matching tab.
-            self.emit_event(crate::api::schema::EventEnvelope {
+            self.pending_events.push(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::WorkspaceFocused,
                 data: crate::api::schema::EventData::WorkspaceFocused {
                     workspace_id: self.public_workspace_id(idx),
@@ -219,7 +219,7 @@ impl AppState {
             self.tab_scroll_follow_active = true;
             // Mirror api.rs tab.focus path so external subscribers
             // (cmux) follow tab switches inside a workspace.
-            self.emit_event(crate::api::schema::EventEnvelope {
+            self.pending_events.push(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::TabFocused,
                 data: crate::api::schema::EventData::TabFocused {
                     tab_id: tab_id.clone(),
@@ -502,7 +502,7 @@ impl AppState {
         // their bindings before we drop terminal state. Keep the id
         // in a local since `self.workspaces.remove` invalidates it.
         let closed_workspace_id = workspace_id.clone();
-        self.emit_event(crate::api::schema::EventEnvelope {
+        self.pending_events.push(crate::api::schema::EventEnvelope {
             event: crate::api::schema::EventKind::WorkspaceClosed,
             data: crate::api::schema::EventData::WorkspaceClosed {
                 workspace_id: closed_workspace_id,
@@ -588,7 +588,7 @@ impl AppState {
                     // their focus to the same pane. Without this,
                     // TUI-driven focus changes leave cmux's view stuck.
                     if let Some(public_pane_id) = self.public_pane_id(ws_idx, target) {
-                        self.emit_event(crate::api::schema::EventEnvelope {
+                        self.pending_events.push(crate::api::schema::EventEnvelope {
                             event: crate::api::schema::EventKind::PaneFocused,
                             data: crate::api::schema::EventData::PaneFocused {
                                 pane_id: public_pane_id,
@@ -615,22 +615,49 @@ impl AppState {
             {
                 tab.layout.resize_focused(direction, 0.05, area);
                 self.mark_session_dirty();
+                // Mirror api.rs pane.set_split_ratio: divider drag in
+                // TUI changes the layout — broadcast so cmux's
+                // HerdrDividerSync re-primes its lastSeen and the
+                // visible split ratio matches.
+                if let Some(ws_idx) = self.active {
+                    let tab_idx = self
+                        .workspaces
+                        .get(ws_idx)
+                        .map(|ws_ref| ws_ref.active_tab_index());
+                    if let Some(tab_idx) = tab_idx {
+                        if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
+                            self.pending_layout_changes.push((ws_idx, tab_idx));
+                        }
+                    }
+                }
             }
         }
     }
 
     pub fn cycle_pane(&mut self, reverse: bool) {
-        if let Some(tab) = self
+        let new_focus = self
             .active
             .and_then(|i| self.workspaces.get_mut(i))
             .and_then(|ws| ws.active_tab_mut())
-        {
-            if reverse {
-                tab.layout.focus_prev();
-            } else {
-                tab.layout.focus_next();
-            }
+            .map(|tab| {
+                if reverse {
+                    tab.layout.focus_prev();
+                } else {
+                    tab.layout.focus_next();
+                }
+                tab.layout.focused()
+            });
+        if let (Some(ws_idx), Some(focused)) = (self.active, new_focus) {
             self.mark_session_dirty();
+            if let Some(public_pane_id) = self.public_pane_id(ws_idx, focused) {
+                self.pending_events.push(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::PaneFocused,
+                    data: crate::api::schema::EventData::PaneFocused {
+                        pane_id: public_pane_id,
+                        workspace_id: self.public_workspace_id(ws_idx),
+                    },
+                });
+            }
         }
     }
 
@@ -682,10 +709,7 @@ impl AppState {
                     .map(|ws_ref| ws_ref.active_tab_index());
                 if let Some(tab_idx) = tab_idx {
                     if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
-                        self.emit_event(crate::api::schema::EventEnvelope {
-                            event: crate::api::schema::EventKind::LayoutChanged,
-                            data: crate::api::schema::EventData::LayoutChanged { tree },
-                        });
+                        self.pending_layout_changes.push((ws_idx, tab_idx));
                     }
                 }
             }
