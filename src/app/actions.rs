@@ -625,9 +625,7 @@ impl AppState {
                         .get(ws_idx)
                         .map(|ws_ref| ws_ref.active_tab_index());
                     if let Some(tab_idx) = tab_idx {
-                        if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
-                            self.pending_layout_changes.push((ws_idx, tab_idx));
-                        }
+                        self.pending_layout_changes.push((ws_idx, tab_idx));
                     }
                 }
             }
