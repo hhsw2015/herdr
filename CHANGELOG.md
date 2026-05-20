@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.5.12-cmux1] - 2026-05-20
+
+### Added
+- cmux fork build with api-bridge (SSH-tunneled JSON-RPC), raw-pty-attach (external GUI clients), layout snapshot/mutation RPCs, LayoutChanged/TabReordered events, pane.resize.
+
 ## [0.5.12] - 2026-05-19
 
 ### Fixed
