@@ -198,7 +198,6 @@ impl App {
         config: &Config,
         no_session: bool,
         config_diagnostic: Option<String>,
-        startup_release_notes: Option<crate::release_notes::ReleaseNotes>,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
     ) -> Self {
@@ -235,6 +234,7 @@ impl App {
                 24,
                 80,
                 config.advanced.scrollback_limit_bytes,
+                &config.terminal.default_shell,
                 event_tx.clone(),
                 render_notify.clone(),
                 render_dirty.clone(),
@@ -316,11 +316,13 @@ impl App {
             .map(|notes| notes.version.clone());
         let latest_release_notes_available = latest_release_notes.is_some();
         let update_install_command = crate::update::update_install_command().to_string();
+        let startup_product_announcement =
+            crate::product_announcements::load_unseen_for_current_version();
 
         let mode = if config.should_show_onboarding() {
             state::Mode::Onboarding
-        } else if startup_release_notes.is_some() {
-            state::Mode::ReleaseNotes
+        } else if startup_product_announcement.is_some() {
+            state::Mode::ProductAnnouncement
         } else if active.is_some() {
             state::Mode::Terminal
         } else {
@@ -349,11 +351,16 @@ impl App {
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
-            release_notes: startup_release_notes.map(|notes| state::ReleaseNotesState {
-                version: notes.version,
-                body: notes.body,
-                scroll: 0,
-                preview: notes.preview,
+            release_notes: None,
+            product_announcement: startup_product_announcement.map(|announcement| {
+                state::ProductAnnouncementState {
+                    version: announcement.version,
+                    id: announcement.id,
+                    title: announcement.title,
+                    body: announcement.body,
+                    scroll: 0,
+                    preview: announcement.preview,
+                }
             }),
             keybind_help: state::KeybindHelpState { scroll: 0 },
             workspace_scroll: 0,
@@ -406,6 +413,7 @@ impl App {
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             kitty_graphics_enabled: config.experimental.kitty_graphics,
+            default_shell: config.terminal.default_shell.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
@@ -425,6 +433,8 @@ impl App {
                 original_palette: None,
                 original_theme: None,
             },
+            integration_recommendations: crate::integration::integration_recommendations(),
+            integration_install_messages: Vec::new(),
             global_menu: state::MenuListState::new(0),
             host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
             session_dirty: false,
@@ -554,11 +564,14 @@ impl App {
             if needs_render && self.can_render_now(now) {
                 self.render_dirty.swap(false, Ordering::AcqRel);
                 let _sync_output = SyncOutputGuard::begin()?;
+                let kitty_graphics_enabled = self.state.kitty_graphics_enabled;
                 if self.full_redraw_pending {
+                    if kitty_graphics_enabled {
+                        crate::kitty_graphics::clear_all_host_graphics()?;
+                    }
                     terminal.clear()?;
                     self.full_redraw_pending = false;
                 }
-                let kitty_graphics_enabled = self.state.kitty_graphics_enabled;
                 let mut cell_size = crate::kitty_graphics::HostCellSize::default();
                 terminal.draw(|frame| {
                     let area = frame.area();
@@ -664,6 +677,30 @@ impl App {
             }
         }
 
+        if self.state.product_announcement.is_some() {
+            self.state.mode = Mode::ProductAnnouncement;
+        } else {
+            self.state.mode = if self.state.active.is_some() {
+                Mode::Terminal
+            } else {
+                Mode::Navigate
+            };
+        }
+    }
+
+    pub(crate) fn dismiss_product_announcement(&mut self) {
+        if let Some(announcement) = self.state.product_announcement.take() {
+            if !announcement.preview {
+                if let Err(err) =
+                    crate::product_announcements::mark_seen(&announcement.version, &announcement.id)
+                {
+                    self.state.config_diagnostic =
+                        Some(format!("failed to update announcement status: {err}"));
+                    self.config_diagnostic_deadline = Some(Instant::now() + Duration::from_secs(5));
+                }
+            }
+        }
+
         self.state.mode = if self.state.active.is_some() {
             Mode::Terminal
         } else {
@@ -683,9 +720,61 @@ impl App {
         }
     }
 
+    pub(crate) fn scroll_product_announcement(&mut self, delta: i16) {
+        let max_scroll = self.state.product_announcement_max_scroll();
+        if let Some(announcement) = &mut self.state.product_announcement {
+            announcement.scroll = if delta.is_negative() {
+                announcement.scroll.saturating_sub(delta.unsigned_abs())
+            } else {
+                announcement.scroll.saturating_add(delta as u16)
+            }
+            .min(max_scroll);
+        }
+    }
+
     pub(crate) fn open_settings_from_onboarding(&mut self) {
         self.mark_onboarding_complete();
-        crate::app::input::open_settings(&mut self.state);
+        self.refresh_integration_recommendations();
+        crate::app::input::open_settings_at(&mut self.state, state::SettingsSection::Integrations);
+    }
+
+    pub(crate) fn refresh_integration_recommendations(&mut self) {
+        self.state.integration_recommendations = crate::integration::integration_recommendations();
+    }
+
+    pub(crate) fn install_recommended_integrations(&mut self) {
+        let targets = self
+            .state
+            .integration_recommendations
+            .iter()
+            .filter(|recommendation| recommendation.needs_install())
+            .map(|recommendation| recommendation.target)
+            .collect::<Vec<_>>();
+
+        self.state.integration_install_messages.clear();
+        if targets.is_empty() {
+            self.state
+                .integration_install_messages
+                .push("all detected integrations are current".to_string());
+            return;
+        }
+
+        for target in targets {
+            let label = crate::integration::integration_target_label(target);
+            match crate::integration::install_target(target) {
+                Ok(_) => self
+                    .state
+                    .integration_install_messages
+                    .push(format!("installed {label}")),
+                Err(err) => self
+                    .state
+                    .integration_install_messages
+                    .push(format!("{label}: {err}")),
+            }
+        }
+
+        self.state.integration_recommendations = crate::integration::integration_recommendations();
+        self.state.mark_session_dirty();
     }
 
     pub(crate) fn reload_config(&mut self) -> crate::config::ConfigReloadReport {
@@ -805,6 +894,10 @@ impl App {
 
         if !invalid_section("advanced") {
             self.state.pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes;
+        }
+
+        if !invalid_section("terminal") {
+            self.state.default_shell = config.terminal.default_shell.clone();
         }
 
         if !invalid_section("theme") {
@@ -982,6 +1075,9 @@ impl App {
             Mode::ReleaseNotes => {
                 self.handle_release_notes_key(key_event);
             }
+            Mode::ProductAnnouncement => {
+                self.handle_product_announcement_key(key_event);
+            }
             Mode::Settings => {
                 self.handle_settings_key(key_event);
             }
@@ -1036,7 +1132,6 @@ mod tests {
             &Config::default(),
             true,
             None,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         )
@@ -1057,6 +1152,14 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique).join("config.toml")
+    }
+
+    fn restore_xdg_state_home(original: Option<std::ffi::OsString>) {
+        if let Some(value) = original {
+            std::env::set_var("XDG_STATE_HOME", value);
+        } else {
+            std::env::remove_var("XDG_STATE_HOME");
+        }
     }
 
     #[test]
@@ -1109,14 +1212,7 @@ mod tests {
         config.ui.agent_panel_scope = crate::config::AgentPanelScopeConfig::Current;
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let app = App::new(
-            &config,
-            true,
-            None,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
+        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
 
         assert_eq!(
             app.state.agent_panel_scope,
@@ -1160,13 +1256,81 @@ mod tests {
     }
 
     #[test]
+    fn startup_keeps_pending_release_notes_available_without_auto_opening() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("startup-pending-release-notes-no-auto-open");
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        crate::release_notes::save_pending(env!("CARGO_PKG_VERSION"), "### Changed\n- One")
+            .unwrap();
+        let config = Config {
+            onboarding: Some(false),
+            ..Default::default()
+        };
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+
+        assert_eq!(app.state.mode, Mode::Navigate);
+        assert!(app.state.release_notes.is_none());
+        assert!(app.state.latest_release_notes_available);
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn startup_still_auto_opens_unseen_product_announcement() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("startup-product-announcement-auto-open");
+        let state_home = path.parent().unwrap().join("state");
+        let original_xdg_state_home = std::env::var_os("XDG_STATE_HOME");
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        std::env::set_var("XDG_STATE_HOME", &state_home);
+
+        crate::release_notes::save_pending(env!("CARGO_PKG_VERSION"), "### Changed\n- One")
+            .unwrap();
+        crate::product_announcements::save_manifest_announcement(
+            env!("CARGO_PKG_VERSION"),
+            Some(&crate::product_announcements::ManifestAnnouncement {
+                id: "startup-announcement".into(),
+                title: Some("Startup announcement".into()),
+                body: "### Announcement\n- One".into(),
+            }),
+        )
+        .unwrap();
+
+        let config = Config {
+            onboarding: Some(false),
+            ..Default::default()
+        };
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+
+        assert_eq!(app.state.mode, Mode::ProductAnnouncement);
+        assert_eq!(
+            app.state
+                .product_announcement
+                .as_ref()
+                .map(|announcement| announcement.id.as_str()),
+            Some("startup-announcement")
+        );
+        assert!(app.state.release_notes.is_none());
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        restore_xdg_state_home(original_xdg_state_home);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn reload_config_updates_live_state() {
         let _guard = config_env_lock().lock().unwrap();
         let path = temp_config_path("reload-config-success");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[keys]\nnew_workspace = \"g\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\n[ui.toast]\ndelivery = \"herdr\"\n",
+            "[terminal]\ndefault_shell = \"nu\"\n[keys]\nnew_workspace = \"g\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\n[ui.toast]\ndelivery = \"herdr\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1189,6 +1353,7 @@ mod tests {
             app.state.agent_panel_scope,
             state::AgentPanelScope::CurrentWorkspace
         );
+        assert_eq!(app.state.default_shell, "nu");
         assert!(app.state.config_diagnostic.is_none());
         let toast = app.state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, crate::app::state::ToastKind::UpdateInstalled);
@@ -1287,14 +1452,7 @@ mod tests {
         config.ui.sidebar_max_width = 30;
 
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let app = App::new(
-            &config,
-            true,
-            None,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
+        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
 
         assert_eq!(
             app.state.sidebar_min_width, 18,
@@ -2453,6 +2611,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn route_client_input_preserves_shift_enter_for_modify_other_keys_pane() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("test");
+        let focused = workspace.focused_pane_id().unwrap();
+        let (runtime, mut rx) =
+            TerminalRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"\x1b[>4;1m", 4);
+        workspace.tabs[0].runtimes.insert(focused, runtime);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.route_client_input(b"\x1b[13;2u".to_vec());
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            bytes::Bytes::from_static(b"\x1b[27;2;13~")
+        );
+    }
+
+    #[tokio::test]
     async fn route_client_input_splits_multi_event_payloads_before_forwarding() {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("test");
@@ -2544,6 +2723,10 @@ mod tests {
         app.route_client_input(b"\r".to_vec());
 
         assert_eq!(app.state.mode, Mode::Settings);
+        assert_eq!(
+            app.state.settings.section,
+            state::SettingsSection::Integrations
+        );
     }
 
     #[test]

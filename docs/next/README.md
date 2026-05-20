@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://herdr.dev">herdr.dev</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#supported-agents">supported agents</a> · <a href="./INTEGRATIONS.md">integrations</a> · <a href="./CONFIGURATION.md">configuration</a> · <a href="./SOCKET_API.md">socket api</a>
+  <a href="https://herdr.dev">herdr.dev</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#supported-agents">supported agents</a> · <a href="https://herdr.dev/docs/integrations/">integrations</a> · <a href="https://herdr.dev/docs/configuration/">configuration</a> · <a href="https://herdr.dev/docs/socket-api/">socket api</a>
 </p>
 
 ---
@@ -79,18 +79,18 @@ tmux gives you persistence and panes, but it was built before agents existed. gu
 
 ## persistence
 
-start herdr on your desktop or server. run your agents, split panes, do your work. press `ctrl+b q` to detach. close your terminal, close your laptop; your agents keep running. open a new terminal, run `herdr`, you're back. same session, same panes, same agents.
+start herdr where the work lives. locally, run `herdr`. it starts or attaches to the background session automatically, with no socket setup. run your agents, split panes, do your work. press `ctrl+b q` to detach. close your terminal, close your laptop; your agents keep running. open a new terminal, run `herdr`, you're back. same session, same panes, same agents.
 
 ### from anywhere
 
-need to check on your agents from your phone? just ssh in and run herdr. any ssh client works. no app to download, no account to create.
+need to check on your agents from your phone? just ssh in and run herdr. your shell is remote, herdr runs there, and the panes keep running there after detach. any ssh client works. no app to download, no account to create.
 
 ```
 ssh you@yourserver
 herdr
 ```
 
-or attach from your local terminal through ssh:
+or attach from your local terminal through ssh without opening a shell first. your local herdr acts as a thin client, connects over ssh, starts or attaches to the remote herdr server, and streams the ui back to your terminal.
 
 ```bash
 herdr --remote workbox
@@ -163,7 +163,7 @@ herdr pane read 1-2 --source recent --lines 50
 herdr pane read 1-2 --source visible --ansi
 ```
 
-full reference: [`SOCKET_API.md`](./SOCKET_API.md) and [`SKILL.md`](./SKILL.md).
+full reference: [socket api](https://herdr.dev/docs/socket-api/) and [`SKILL.md`](./SKILL.md).
 
 ## supported agents
 
@@ -179,10 +179,11 @@ automatic detection works out of the box. process name matching plus terminal ou
 | [opencode](https://github.com/anomalyco/opencode) | ✓ | ✓ | ✓ |
 | [grok cli](https://x.ai/grok) | ✓ | ✓ | ✓ |
 | [hermes agent](https://github.com/NousResearch/hermes-agent) | ✓ | ✓ | ✓ |
+| [kiro cli](https://kiro.dev/docs/cli/) | ✓ | ✓ | — |
 
 detected but not fully tested: gemini cli, cursor agent, cline, kimi, github copilot cli.
 
-for agents outside the built-in list, herdr still works as a terminal multiplexer with workspaces, panes, and tiling. custom integrations can report agent labels over the socket api. see [`SOCKET_API.md`](./SOCKET_API.md).
+for agents outside the built-in list, herdr still works as a terminal multiplexer with workspaces, panes, and tiling. custom integrations can report agent labels over the socket api. see the [socket api docs](https://herdr.dev/docs/socket-api/).
 
 ### direct integrations
 
@@ -196,7 +197,7 @@ herdr integration install opencode
 herdr integration install hermes
 ```
 
-see [`INTEGRATIONS.md`](./INTEGRATIONS.md) for setup details.
+see the [integrations docs](https://herdr.dev/docs/integrations/) for setup details.
 
 ## keybindings
 
@@ -226,7 +227,7 @@ type = "pane" # "shell" or "pane"
 command = "lazygit"
 ```
 
-mouse is supported throughout. full reference: [`CONFIGURATION.md`](./CONFIGURATION.md).
+mouse is supported throughout. full reference: [configuration docs](https://herdr.dev/docs/configuration/).
 
 ## configuration
 
@@ -236,7 +237,7 @@ config file: `~/.config/herdr/config.toml`
 herdr --default-config   # print full default config
 ```
 
-in-app settings screen for theme, sound, and toast preferences. full reference: [`CONFIGURATION.md`](./CONFIGURATION.md).
+in-app settings screen for theme, sound, and toast preferences. full reference: [configuration docs](https://herdr.dev/docs/configuration/).
 
 ## logs
 
@@ -260,14 +261,18 @@ use a higher log level only when needed:
 HERDR_LOG=herdr=debug herdr
 ```
 
-full logging and environment variable details: [`CONFIGURATION.md`](./CONFIGURATION.md).
+full logging and environment variable details: [configuration docs](https://herdr.dev/docs/configuration/).
 
 ## docs
 
-- [`CONFIGURATION.md`](./CONFIGURATION.md) — keybindings, themes, notifications, environment variables
-- [`INTEGRATIONS.md`](./INTEGRATIONS.md) — pi, claude code, codex, opencode, hermes integrations
+- [configuration](https://herdr.dev/docs/configuration/) — keybindings, themes, notifications, environment variables
+- [integrations](https://herdr.dev/docs/integrations/) — pi, claude code, codex, opencode, hermes integrations
 - [`SKILL.md`](./SKILL.md) — reusable agent skill
-- [`SOCKET_API.md`](./SOCKET_API.md) — socket protocol and cli reference
+- [socket api](https://herdr.dev/docs/socket-api/) — socket protocol and cli reference
+
+## agent instructions
+
+If you are an AI agent helping with this repository, read [`AGENTS.md`](./AGENTS.md) before making changes and read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before opening issues or PRs.
 
 ## building from source
 
@@ -282,7 +287,7 @@ cargo build --release
 
 ```bash
 just test        # unit tests
-just test-all   # full local test suite
+just check       # formatting, tests, and maintenance checks
 ```
 
 ## license
@@ -303,8 +308,8 @@ related context: #78, #81, #106, and earendil-works/pi#1872.
 
 <a href="https://www.star-history.com/?repos=ogulcancelik%2Fherdr&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&theme=dark&legend=top-left&v=2026-05-19" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&legend=top-left&v=2026-05-19" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&legend=top-left&v=2026-05-19" />
  </picture>
 </a>

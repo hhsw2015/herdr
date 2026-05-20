@@ -588,6 +588,7 @@ pub struct ViewState {
 pub enum Mode {
     Onboarding,
     ReleaseNotes,
+    ProductAnnouncement,
     Navigate,
     Terminal,
     RenameWorkspace,
@@ -619,10 +620,17 @@ pub enum SettingsSection {
     Sound,
     Toast,
     PaneLabels,
+    Integrations,
 }
 
 impl SettingsSection {
-    pub const ALL: &[Self] = &[Self::Theme, Self::Sound, Self::Toast, Self::PaneLabels];
+    pub const ALL: &[Self] = &[
+        Self::Theme,
+        Self::Sound,
+        Self::Toast,
+        Self::PaneLabels,
+        Self::Integrations,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -630,6 +638,7 @@ impl SettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::PaneLabels => "pane labels",
+            Self::Integrations => "integrations",
         }
     }
 }
@@ -747,6 +756,9 @@ pub(crate) enum DragTarget {
     ReleaseNotesScrollbar {
         grab_row_offset: u16,
     },
+    ProductAnnouncementScrollbar {
+        grab_row_offset: u16,
+    },
     KeybindHelpScrollbar {
         grab_row_offset: u16,
     },
@@ -853,6 +865,15 @@ pub struct ReleaseNotesState {
     pub preview: bool,
 }
 
+pub struct ProductAnnouncementState {
+    pub version: String,
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub scroll: u16,
+    pub preview: bool,
+}
+
 pub struct KeybindHelpState {
     pub scroll: u16,
 }
@@ -899,6 +920,7 @@ pub struct AppState {
     pub name_input: String,
     pub name_input_replace_on_type: bool,
     pub release_notes: Option<ReleaseNotesState>,
+    pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
@@ -943,6 +965,7 @@ pub struct AppState {
     pub prompt_new_tab_name: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub kitty_graphics_enabled: bool,
+    pub default_shell: String,
     pub pane_scrollback_limit_bytes: usize,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
     pub accent: Color,
@@ -958,6 +981,10 @@ pub struct AppState {
     pub theme_name: String,
     /// Settings panel state.
     pub settings: SettingsState,
+    /// Cached integration recommendations for onboarding/settings UI.
+    pub integration_recommendations: Vec<crate::integration::IntegrationRecommendation>,
+    /// Result messages from the latest integration install action.
+    pub integration_install_messages: Vec<String>,
     /// Highlight state for the bottom-right global launcher menu.
     pub global_menu: MenuListState,
     /// Resolved host terminal default colors for theming embedded panes.
@@ -1133,6 +1160,7 @@ impl AppState {
             name_input: String::new(),
             name_input_replace_on_type: false,
             release_notes: None,
+            product_announcement: None,
             keybind_help: KeybindHelpState { scroll: 0 },
             workspace_scroll: 0,
             agent_panel_scroll: 0,
@@ -1184,6 +1212,7 @@ impl AppState {
             prompt_new_tab_name: true,
             show_agent_labels_on_pane_borders: false,
             kitty_graphics_enabled: false,
+            default_shell: String::new(),
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
             accent: Color::Cyan,
             sound: SoundConfig {
@@ -1264,6 +1293,8 @@ impl AppState {
                 original_palette: None,
                 original_theme: None,
             },
+            integration_recommendations: Vec::new(),
+            integration_install_messages: Vec::new(),
             global_menu: MenuListState::new(0),
             host_terminal_theme: TerminalTheme::default(),
             session_dirty: false,

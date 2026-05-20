@@ -35,6 +35,7 @@ mod logging;
 mod pane;
 mod persist;
 mod platform;
+mod product_announcements;
 mod raw_input;
 mod release_notes;
 mod remote;
@@ -73,6 +74,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # accent = "#f5c2e7"
 # red = "#ff6188"
 # green = "#a6e3a1"
+
+[terminal]
+# Executable used for new interactive panes.
+# Empty means $SHELL, then /bin/sh.
+# default_shell = ""
 
 [keys]
 # Prefix key to enter navigate mode (default: "ctrl+b")
@@ -211,6 +217,16 @@ fn random_nested_message() -> &'static str {
     NESTED_HERDR_MESSAGES[index]
 }
 
+fn exit_if_nested_disabled(config: &config::Config) {
+    if should_block_nested(config) {
+        eprintln!("\x1b[1merror:\x1b[0m nested herdr is disabled by default.");
+        eprintln!("see configuration if you want to enable it.");
+        eprintln!();
+        eprintln!("\x1b[2m\"{}\"\x1b[0m", random_nested_message());
+        std::process::exit(1);
+    }
+}
+
 fn main() -> io::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let args = match session::configure_from_args(&raw_args) {
@@ -257,8 +273,10 @@ fn main() -> io::Result<()> {
         return server::headless::run_server();
     }
 
-    // Client mode: connect to an existing server's client socket.
+    // Hidden client mode: connect to an existing server's client socket.
     if args.get(1).map(|s| s.as_str()) == Some("client") {
+        let loaded_config = config::Config::load();
+        exit_if_nested_disabled(&loaded_config.config);
         return client::run_client();
     }
 
@@ -340,15 +358,7 @@ fn main() -> io::Result<()> {
         }
         println!();
         println!("Advanced commands:");
-        for (command, description) in [
-            ("herdr server", "Run as headless server"),
-            (
-                "herdr client",
-                "Connect to a running server as a thin client",
-            ),
-        ] {
-            println!("  {command:<32} {description}");
-        }
+        println!("  {:<32} Run as headless server", "herdr server");
         println!();
         println!("Options:");
         println!("  --no-session        Run monolithically (no server/client, escape hatch)");
@@ -418,13 +428,7 @@ fn main() -> io::Result<()> {
     }
 
     let loaded_config = config::Config::load();
-    if should_block_nested(&loaded_config.config) {
-        eprintln!("\x1b[1merror:\x1b[0m nested herdr is disabled by default.");
-        eprintln!("see configuration if you want to enable it.");
-        eprintln!();
-        eprintln!("\x1b[2m\"{}\"\x1b[0m", random_nested_message());
-        std::process::exit(1);
-    }
+    exit_if_nested_disabled(&loaded_config.config);
 
     let no_session = args.iter().any(|a| a == "--no-session");
 
@@ -455,13 +459,17 @@ fn main() -> io::Result<()> {
         Err(err) => return Err(err),
     };
 
-    let in_tmux = std::env::var("TMUX").is_ok();
+    let modify_other_keys_mode = crate::input::host_modify_other_keys_mode(
+        std::env::var("TMUX").is_ok(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var_os("WEZTERM_PANE").is_some(),
+    );
 
     let original_hook = std::panic::take_hook();
-    let panic_in_tmux = in_tmux;
+    let panic_resets_modify_other_keys = modify_other_keys_mode.is_some();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("PANIC: {info}");
-        if panic_in_tmux {
+        if panic_resets_modify_other_keys {
             let _ = std::io::Write::write_all(&mut io::stdout(), b"\x1b[>4;0m");
         }
         if crate::kitty_graphics::is_enabled() {
@@ -505,29 +513,26 @@ fn main() -> io::Result<()> {
             PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
         )?;
 
-        // tmux doesn't understand kitty keyboard protocol push (\e[>1u).
-        // It uses modifyOtherKeys mode to send CSI u sequences for modified keys.
-        // Enable modifyOtherKeys mode 2 so tmux sends Shift+Enter as \e[13;2u etc.
-        if in_tmux {
+        // Some hosts do not honor Kitty keyboard enhancement pushes for
+        // Shift+Enter. Enable xterm modifyOtherKeys only on hosts where we
+        // know it is needed and parseable, so modified Enter stays distinct.
+        if let Some(mode) = modify_other_keys_mode {
             use std::io::Write;
-            std::io::stdout().write_all(b"\x1b[>4;2m")?;
+            std::io::stdout().write_all(mode.set_sequence())?;
             std::io::stdout().flush()?;
         }
-
-        let startup_release_notes = crate::release_notes::load_pending_for_current_version();
 
         let mut app = app::App::new(
             config,
             true, // no_session — monolithic mode never saves/restores sessions
             config_diagnostic,
-            startup_release_notes,
             api_rx,
             event_hub,
         );
         let result = app.run(&mut terminal).await;
 
-        // Reset modifyOtherKeys if we enabled it
-        if in_tmux {
+        // Reset modifyOtherKeys if we enabled it.
+        if modify_other_keys_mode.is_some() {
             use std::io::Write;
             std::io::stdout().write_all(b"\x1b[>4;0m")?;
             std::io::stdout().flush()?;

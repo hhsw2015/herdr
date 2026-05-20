@@ -16,11 +16,11 @@ const PI_INTEGRATION_VERSION: u32 = 1;
 const PI_CODING_AGENT_DIR_ENV_VAR: &str = "PI_CODING_AGENT_DIR";
 const CLAUDE_HOOK_INSTALL_NAME: &str = "herdr-agent-state.sh";
 const CLAUDE_HOOK_ASSET: &str = include_str!("assets/claude/herdr-agent-state.sh");
-const CLAUDE_INTEGRATION_VERSION: u32 = 1;
+const CLAUDE_INTEGRATION_VERSION: u32 = 2;
 const CLAUDE_CONFIG_DIR_ENV_VAR: &str = "CLAUDE_CONFIG_DIR";
 const CODEX_HOOK_INSTALL_NAME: &str = "herdr-agent-state.sh";
 const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/herdr-agent-state.sh");
-const CODEX_INTEGRATION_VERSION: u32 = 2;
+const CODEX_INTEGRATION_VERSION: u32 = 3;
 const CODEX_HOME_ENV_VAR: &str = "CODEX_HOME";
 const OPENCODE_PLUGIN_INSTALL_NAME: &str = "herdr-agent-state.js";
 const OPENCODE_PLUGIN_ASSET: &str = include_str!("assets/opencode/herdr-agent-state.js");
@@ -71,6 +71,32 @@ pub(crate) enum IntegrationStatusKind {
     NotInstalled,
     Current,
     Outdated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IntegrationRecommendation {
+    pub target: crate::api::schema::IntegrationTarget,
+    pub label: &'static str,
+    pub command: &'static str,
+    pub available: bool,
+    pub path: PathBuf,
+    pub state: IntegrationStatusKind,
+}
+
+impl IntegrationRecommendation {
+    pub fn needs_install(&self) -> bool {
+        self.state == IntegrationStatusKind::Outdated
+            || (self.available && self.state == IntegrationStatusKind::NotInstalled)
+    }
+
+    pub fn status_label(&self) -> &'static str {
+        match (self.available, self.state) {
+            (_, IntegrationStatusKind::Current) => "installed",
+            (_, IntegrationStatusKind::Outdated) => "update available",
+            (true, IntegrationStatusKind::NotInstalled) => "available",
+            (false, IntegrationStatusKind::NotInstalled) => "not found",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -311,11 +337,71 @@ pub(crate) fn integration_target_label(
     }
 }
 
+fn integration_target_command(target: crate::api::schema::IntegrationTarget) -> &'static str {
+    match target {
+        crate::api::schema::IntegrationTarget::Pi => "pi",
+        crate::api::schema::IntegrationTarget::Claude => "claude",
+        crate::api::schema::IntegrationTarget::Codex => "codex",
+        crate::api::schema::IntegrationTarget::Opencode => "opencode",
+        crate::api::schema::IntegrationTarget::Hermes => "hermes",
+    }
+}
+
+fn integration_target_available(target: crate::api::schema::IntegrationTarget) -> bool {
+    command_available(integration_target_command(target))
+}
+
+fn command_available(command: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| executable_file_exists(&dir.join(command)))
+}
+
+fn executable_file_exists(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 pub(crate) fn installed_integration_statuses() -> Vec<IntegrationStatus> {
     integration_specs()
         .into_iter()
         .filter_map(|(target, path, expected_version)| {
             Some(integration_status_at(target, path.ok()?, expected_version))
+        })
+        .collect()
+}
+
+pub(crate) fn integration_recommendations() -> Vec<IntegrationRecommendation> {
+    integration_specs()
+        .into_iter()
+        .filter_map(|(target, path, expected_version)| {
+            let path = path.ok()?;
+            let status = integration_status_at(target, path.clone(), expected_version);
+            Some(IntegrationRecommendation {
+                target,
+                label: integration_target_label(target),
+                command: integration_target_command(target),
+                available: integration_target_available(target)
+                    || status.state != IntegrationStatusKind::NotInstalled,
+                path,
+                state: status.state,
+            })
         })
         .collect()
 }
@@ -495,6 +581,16 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
         "claude settings hooks",
     )?;
     let quoted_hook_path = shell_single_quote(&hook_path.display().to_string());
+    remove_command_hook(
+        hooks,
+        "PostToolUse",
+        &format!("bash {quoted_hook_path} working"),
+    )?;
+    remove_command_hook(
+        hooks,
+        "PostToolUseFailure",
+        &format!("bash {quoted_hook_path} working"),
+    )?;
     ensure_command_hook(
         hooks,
         "UserPromptSubmit",
@@ -513,20 +609,6 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
         hooks,
         "PermissionRequest",
         format!("bash {quoted_hook_path} blocked"),
-        10,
-        Some("*"),
-    )?;
-    ensure_command_hook(
-        hooks,
-        "PostToolUse",
-        format!("bash {quoted_hook_path} working"),
-        10,
-        Some("*"),
-    )?;
-    ensure_command_hook(
-        hooks,
-        "PostToolUseFailure",
-        format!("bash {quoted_hook_path} working"),
         10,
         Some("*"),
     )?;
@@ -607,6 +689,13 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
         hooks,
         "PreToolUse",
         format!("bash {quoted_hook_path} working"),
+        10,
+        None,
+    )?;
+    ensure_command_hook(
+        hooks,
+        "PermissionRequest",
+        format!("bash {quoted_hook_path} blocked"),
         10,
         None,
     )?;
@@ -812,6 +901,11 @@ pub(crate) fn uninstall_codex() -> io::Result<CodexUninstallResult> {
                 hooks,
                 "PreToolUse",
                 &format!("bash {quoted_hook_path} working"),
+            )?;
+            updated_hooks |= remove_command_hook(
+                hooks,
+                "PermissionRequest",
+                &format!("bash {quoted_hook_path} blocked"),
             )?;
             updated_hooks |=
                 remove_command_hook(hooks, "Stop", &format!("bash {quoted_hook_path} idle"))?;
@@ -1355,6 +1449,58 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn command_available_requires_executable_file_on_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let bin = base.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let original_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &bin);
+
+        let command = bin.join("claude");
+        fs::write(&command, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!command_available("claude"));
+
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(command_available("claude"));
+
+        if let Some(path) = original_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn integration_recommendation_installs_available_or_outdated_targets() {
+        let mut recommendation = IntegrationRecommendation {
+            target: crate::api::schema::IntegrationTarget::Claude,
+            label: "claude",
+            command: "claude",
+            available: false,
+            path: PathBuf::from("/tmp/herdr-agent-state.sh"),
+            state: IntegrationStatusKind::NotInstalled,
+        };
+        assert!(!recommendation.needs_install());
+
+        recommendation.available = true;
+        assert!(recommendation.needs_install());
+
+        recommendation.available = false;
+        recommendation.state = IntegrationStatusKind::Outdated;
+        assert!(recommendation.needs_install());
+
+        recommendation.available = true;
+        recommendation.state = IntegrationStatusKind::Current;
+        assert!(!recommendation.needs_install());
+    }
+
+    #[test]
     fn install_pi_writes_embedded_asset_to_pi_extensions_dir() {
         let _lock = integration_env_lock();
         let base = unique_base();
@@ -1532,16 +1678,8 @@ mod tests {
                 .unwrap()
                 .contains(" blocked")
         );
-        assert!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .contains(" working"));
-        assert!(
-            settings["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .contains(" working")
-        );
+        assert!(settings["hooks"].get("PostToolUse").is_none());
+        assert!(settings["hooks"].get("PostToolUseFailure").is_none());
         assert!(settings["hooks"]["SubagentStop"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
@@ -1609,23 +1747,91 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(
-            settings["hooks"]["PostToolUse"].as_array().unwrap().len(),
-            1
-        );
-        assert_eq!(
-            settings["hooks"]["PostToolUseFailure"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        assert!(settings["hooks"].get("PostToolUse").is_none());
+        assert!(settings["hooks"].get("PostToolUseFailure").is_none());
         assert_eq!(
             settings["hooks"]["SubagentStop"].as_array().unwrap().len(),
             1
         );
         assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
         assert_eq!(settings["hooks"]["SessionEnd"].as_array().unwrap().len(), 1);
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_claude_removes_deprecated_post_tool_hooks_and_preserves_user_hooks() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let claude_dir = home.join(".claude");
+        let hooks_dir = claude_dir.join("hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
+        fs::write(
+            claude_dir.join("settings.json"),
+            format!(
+                r#"{{"hooks":{{"PostToolUse":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep-post","timeout":10}}]}}],"PostToolUseFailure":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep-failure","timeout":10}}]}}]}}}}"#,
+                hook_path.display(),
+                hook_path.display(),
+            ),
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
+
+        install_claude().unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "echo keep-post"
+        );
+        assert_eq!(
+            settings["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"],
+            "echo keep-failure"
+        );
+        assert_eq!(
+            settings["hooks"]["UserPromptSubmit"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn claude_v1_integration_status_is_outdated() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let claude_hooks_dir = home.join(".claude").join("hooks");
+        fs::create_dir_all(&claude_hooks_dir).unwrap();
+        let hook_path = claude_hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
+        fs::write(
+            &hook_path,
+            "#!/bin/sh\n# HERDR_INTEGRATION_ID=claude\n# HERDR_INTEGRATION_VERSION=1\n",
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
+
+        let statuses = installed_integration_statuses();
+        let claude = statuses
+            .iter()
+            .find(|status| status.target == crate::api::schema::IntegrationTarget::Claude)
+            .unwrap();
+
+        assert_eq!(claude.path, hook_path);
+        assert_eq!(claude.installed_version, Some(1));
+        assert_eq!(claude.expected_version, 2);
+        assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
         std::env::remove_var("HOME");
         let _ = fs::remove_dir_all(base);
@@ -1704,6 +1910,36 @@ mod tests {
     }
 
     #[test]
+    fn codex_v2_integration_status_is_outdated() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let codex_dir = home.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        let hook_path = codex_dir.join(CODEX_HOOK_INSTALL_NAME);
+        fs::write(
+            &hook_path,
+            "#!/bin/sh\n# HERDR_INTEGRATION_ID=codex\n# HERDR_INTEGRATION_VERSION=2\n",
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
+
+        let statuses = installed_integration_statuses();
+        let codex = statuses
+            .iter()
+            .find(|status| status.target == crate::api::schema::IntegrationTarget::Codex)
+            .unwrap();
+
+        assert_eq!(codex.path, hook_path);
+        assert_eq!(codex.installed_version, Some(2));
+        assert_eq!(codex.expected_version, 3);
+        assert_eq!(codex.state, IntegrationStatusKind::Outdated);
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn install_codex_writes_hook_and_updates_hooks_and_config() {
         let _lock = integration_env_lock();
         let base = unique_base();
@@ -1735,6 +1971,12 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(" working"));
+        assert!(
+            hooks["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains(" blocked")
+        );
         assert!(hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
@@ -1795,6 +2037,13 @@ mod tests {
             1
         );
         assert_eq!(hooks["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            hooks["hooks"]["PermissionRequest"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(hooks["hooks"]["Stop"].as_array().unwrap().len(), 1);
         assert_eq!(config.matches("hooks = true").count(), 1);
         assert!(!config.contains("codex_hooks"));
@@ -1841,7 +2090,9 @@ mod tests {
         fs::write(
             codex_dir.join("hooks.json"),
             format!(
-                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}],"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep","timeout":10}}]}}],"Stop":[{{"hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}]}}}}"#,
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}],"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep","timeout":10}}]}}],"PreToolUse":[{{"hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}}]}}],"PermissionRequest":[{{"hooks":[{{"type":"command","command":"bash '{}' blocked","timeout":10}}]}}],"Stop":[{{"hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}]}}}}"#,
+                hook_path.display(),
+                hook_path.display(),
                 hook_path.display(),
                 hook_path.display(),
                 hook_path.display(),
@@ -1865,6 +2116,8 @@ mod tests {
         assert!(result.updated_hooks);
         assert!(!result.hook_path.exists());
         assert!(hooks["hooks"].get("SessionStart").is_none());
+        assert!(hooks["hooks"].get("PreToolUse").is_none());
+        assert!(hooks["hooks"].get("PermissionRequest").is_none());
         assert!(hooks["hooks"].get("Stop").is_none());
         assert_eq!(
             hooks["hooks"]["UserPromptSubmit"][0]["hooks"]

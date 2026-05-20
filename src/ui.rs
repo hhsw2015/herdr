@@ -33,11 +33,12 @@ use self::mobile::{
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
 use self::onboarding::render_onboarding_overlay;
 use self::panes::{compute_pane_infos, render_panes, resize_tab_panes};
-use self::release_notes::render_release_notes_overlay;
 pub(crate) use self::release_notes::{
-    release_notes_close_button_rect, release_notes_display_lines, release_notes_sections,
+    product_announcement_display_lines, release_notes_close_button_rect,
+    release_notes_display_lines, release_notes_sections, PRODUCT_ANNOUNCEMENT_MODAL_SIZE,
     RELEASE_NOTES_MODAL_SIZE,
 };
+use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
@@ -48,7 +49,7 @@ use self::status::{render_config_diagnostic, render_toast_notification, toast_no
 use self::tabs::render_tab_bar;
 pub(crate) use self::{
     dialogs::{confirm_close_button_rects, confirm_close_popup_rect, rename_button_rects},
-    settings::settings_button_rects,
+    settings::{settings_button_rects, settings_show_primary_action},
     sidebar::{
         agent_panel_body_rect, agent_panel_entries, agent_panel_scroll_metrics,
         agent_panel_scrollbar_rect, agent_panel_toggle_rect, collapsed_sidebar_sections,
@@ -305,6 +306,7 @@ pub fn render(app: &AppState, frame: &mut Frame) {
     match app.mode {
         Mode::Onboarding => render_onboarding_overlay(app, frame, frame.area()),
         Mode::ReleaseNotes => render_release_notes_overlay(app, frame, frame.area()),
+        Mode::ProductAnnouncement => render_product_announcement_overlay(app, frame, frame.area()),
         Mode::Navigate if app.view.layout == ViewLayout::Mobile => {
             render_mobile_panel(app, frame, frame.area())
         }

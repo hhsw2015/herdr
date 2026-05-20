@@ -64,6 +64,18 @@ enum LoopEvent {
 const MIN_COLS: u16 = 80;
 const MIN_ROWS: u16 = 24;
 
+fn paste_payload_for_runtime(runtime: &crate::terminal::TerminalRuntime, text: &str) -> String {
+    if runtime
+        .input_state()
+        .map(|state| state.bracketed_paste)
+        .unwrap_or(false)
+    {
+        format!("\x1b[200~{text}\x1b[201~")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// Legacy environment variable for overriding the client socket path.
 ///
 /// Contractual override behavior for auto-detect uses `HERDR_SOCKET_PATH`.
@@ -233,10 +245,14 @@ struct ClientConnection {
     render_state: ClientRenderState,
     /// Client-local host Kitty graphics cache.
     graphics_cache: crate::kitty_graphics::HostGraphicsCache,
+    /// Whether the next graphics frame must clear and rebuild host-side Kitty state.
+    graphics_surface_reset_pending: bool,
     /// Whether a render was skipped because the render channel was full.
     render_pending: bool,
     /// Last host mouse capture mode sent to this client.
     host_mouse_capture_active: Option<bool>,
+    /// Temporary files staged from this client's local clipboard image pastes.
+    staged_clipboard_files: Vec<PathBuf>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     writer: Option<ClientWriter>,
 }
@@ -283,14 +299,17 @@ impl ClientConnection {
             last_activity,
             render_state: ClientRenderState::new(render_encoding),
             graphics_cache: crate::kitty_graphics::HostGraphicsCache::default(),
+            graphics_surface_reset_pending: false,
             render_pending: false,
             host_mouse_capture_active: None,
+            staged_clipboard_files: Vec::new(),
             writer,
         }
     }
 
     fn request_full_redraw(&mut self) {
         self.render_state.reset_baseline();
+        self.graphics_surface_reset_pending = true;
     }
 
     fn request_semantic_redraw_after_input(&mut self) {
@@ -653,17 +672,16 @@ impl HeadlessServer {
         let was_foreground = self.foreground_client_id == Some(client_id);
         self.send_client_graphics_cleanup(client_id);
         let removed = self.clients.remove(&client_id);
-        if let Some(ClientConnection {
-            mode: ClientConnectionMode::TerminalAttach { terminal_id },
-            ..
-        }) = removed
-        {
-            self.terminal_attach_owners.remove(&terminal_id);
-            if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
-                self.app
-                    .state
-                    .direct_attach_resize_locks
-                    .remove(&terminal_id);
+        if let Some(removed) = removed {
+            crate::server::clipboard_image::remove_files(removed.staged_clipboard_files);
+            if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
+                self.terminal_attach_owners.remove(&terminal_id);
+                if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
+                    self.app
+                        .state
+                        .direct_attach_resize_locks
+                        .remove(&terminal_id);
+                }
             }
         }
         if was_foreground {
@@ -832,6 +850,49 @@ impl HeadlessServer {
     ) -> Option<&crate::terminal::TerminalRuntime> {
         let terminal_id = self.terminal_id_by_string(terminal_id)?;
         self.app.state.terminal_runtimes.get(&terminal_id)
+    }
+
+    fn write_client_clipboard_image(
+        &mut self,
+        client_id: u64,
+        extension: &str,
+        data: &[u8],
+    ) -> std::io::Result<String> {
+        let staged = crate::server::clipboard_image::stage(client_id, extension, data)?;
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.staged_clipboard_files.push(staged.path);
+        }
+        info!(client_id, bytes = data.len(), path = %staged.paste_text, "staged client clipboard image");
+        Ok(staged.paste_text)
+    }
+
+    fn paste_client_clipboard_image_path(&mut self, client_id: u64, path: String) -> bool {
+        if let Some(ClientConnection {
+            mode: ClientConnectionMode::TerminalAttach { terminal_id },
+            ..
+        }) = self.clients.get(&client_id)
+        {
+            if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
+                let payload = paste_payload_for_runtime(runtime, &path);
+                if let Err(err) = runtime.try_send_bytes(Bytes::from(payload)) {
+                    warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach clipboard image paste failed");
+                }
+            }
+            return true;
+        }
+
+        let foreground_changed = self.promote_client_to_foreground(client_id);
+        if foreground_changed {
+            self.resize_shared_runtime_to_effective_size();
+        }
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.request_semantic_redraw_after_input();
+        }
+        self.app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Paste(path)],
+            self.foreground_client_id == Some(client_id),
+        );
+        true
     }
 
     fn pane_effective_state(&self, pane_id: crate::layout::PaneId) -> crate::detect::AgentState {
@@ -1516,6 +1577,25 @@ impl HeadlessServer {
                     foreground_changed || theme_changed || interaction
                 }
             }
+            ServerEvent::ClientClipboardImage {
+                client_id,
+                extension,
+                data,
+            } => {
+                debug!(
+                    client_id,
+                    len = data.len(),
+                    extension = %extension,
+                    "client clipboard image received"
+                );
+                match self.write_client_clipboard_image(client_id, &extension, &data) {
+                    Ok(path) => self.paste_client_clipboard_image_path(client_id, path),
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to stage client clipboard image");
+                        true
+                    }
+                }
+            }
             ServerEvent::ClientResize {
                 client_id,
                 cols,
@@ -1926,12 +2006,18 @@ impl HeadlessServer {
                 continue;
             };
             let mut next_graphics_cache = client.graphics_cache.clone();
+            let graphics_surface_reset_pending = client.graphics_surface_reset_pending;
             if is_app_client && self.app.state.kitty_graphics_enabled && cell_size.is_known() {
-                frame.graphics = crate::kitty_graphics::encode_local_pane_graphics(
-                    &self.app.state,
-                    cell_size,
-                    &mut next_graphics_cache,
-                );
+                if graphics_surface_reset_pending {
+                    frame.graphics = next_graphics_cache.clear_bytes();
+                }
+                frame
+                    .graphics
+                    .extend(crate::kitty_graphics::encode_local_pane_graphics(
+                        &self.app.state,
+                        cell_size,
+                        &mut next_graphics_cache,
+                    ));
             } else {
                 frame.graphics = next_graphics_cache.clear_bytes();
             }
@@ -2015,6 +2101,7 @@ impl HeadlessServer {
                     client.render_pending = false;
                     if commit_graphics_cache {
                         client.graphics_cache = next_graphics_cache;
+                        client.graphics_surface_reset_pending = false;
                     }
                     client
                         .render_state
@@ -2169,7 +2256,12 @@ impl HeadlessServer {
         self.drain_api_requests_with_shutdown_check();
 
         // Close all client connections.
-        self.clients.clear();
+        let staged_files = self
+            .clients
+            .drain()
+            .flat_map(|(_, client)| client.staged_clipboard_files)
+            .collect::<Vec<_>>();
+        crate::server::clipboard_image::remove_files(staged_files);
 
         // Remove socket files.
         self.cleanup_sockets()?;
@@ -2194,6 +2286,12 @@ impl HeadlessServer {
 
 impl Drop for HeadlessServer {
     fn drop(&mut self) {
+        let staged_files = self
+            .clients
+            .drain()
+            .flat_map(|(_, client)| client.staged_clipboard_files)
+            .collect::<Vec<_>>();
+        crate::server::clipboard_image::remove_files(staged_files);
         let _ = self.cleanup_sockets();
     }
 }
@@ -2256,7 +2354,6 @@ pub fn run_server() -> io::Result<()> {
             &loaded_config.config,
             no_session,
             config::config_diagnostic_summary(&loaded_config.diagnostics),
-            None, // startup_release_notes
             api_rx,
             event_hub,
         );
@@ -2283,6 +2380,7 @@ pub fn run_server() -> io::Result<()> {
             client_socket = %client_socket_path().display(),
             "herdr server started"
         );
+        print_ready_message(&api::socket_path(), &client_socket_path());
 
         server.run().await
     });
@@ -2290,6 +2388,19 @@ pub fn run_server() -> io::Result<()> {
     rt.shutdown_timeout(Duration::from_millis(100));
     crate::logging::shutdown("server");
     result
+}
+
+fn print_ready_message(api_socket: &Path, client_socket: &Path) {
+    eprintln!("herdr server running; you can use any herdr CLI command in another terminal.");
+    eprintln!("api socket: {}", api_socket.display());
+    eprintln!("client socket: {}", client_socket.display());
+    eprintln!(
+        "logs: {}",
+        crate::session::data_dir()
+            .join("herdr-server.log")
+            .display()
+    );
+    eprintln!("did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.");
 }
 
 /// Initialize logging for the server process.
@@ -2310,8 +2421,7 @@ mod tests {
     fn test_headless_server() -> HeadlessServer {
         let config = crate::config::Config::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app =
-            crate::app::App::new(&config, true, None, None, api_rx, api::EventHub::default());
+        let mut app = crate::app::App::new(&config, true, None, api_rx, api::EventHub::default());
         app.state.local_sound_playback = false;
         app.local_terminal_notifications = false;
 

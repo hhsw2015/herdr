@@ -22,6 +22,16 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+pub fn state_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
+        PathBuf::from(dir).join(app_dir_name())
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(format!(".local/state/{}", app_dir_name()))
+    } else {
+        PathBuf::from(format!("/tmp/{}-state", app_dir_name()))
+    }
+}
+
 impl Config {
     pub fn load() -> LoadedConfig {
         let path = config_path();
@@ -149,6 +159,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.keys = section,
+    );
+    load_live_section(
+        table,
+        "terminal",
+        "terminal config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.terminal = section,
     );
     load_live_section(
         table,

@@ -1035,7 +1035,6 @@ mod tests {
             &Config::default(),
             true,
             None,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -1084,7 +1083,6 @@ mod tests {
             &Config::default(),
             true,
             None,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -1094,6 +1092,7 @@ mod tests {
             80,
             app.state.pane_scrollback_limit_bytes,
             app.state.host_terminal_theme,
+            &app.state.default_shell,
             app.event_tx.clone(),
             app.render_notify.clone(),
             app.render_dirty.clone(),
@@ -1152,7 +1151,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             true,
-            None,
             None,
             api_rx,
             crate::api::EventHub::default(),
