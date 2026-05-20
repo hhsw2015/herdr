@@ -1106,7 +1106,7 @@ fn api_bridge(args: &[String]) -> std::io::Result<i32> {
     };
     let mut stream_read = stream
         .try_clone()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone: {e}")))?;
+        .map_err(|e| io::Error::other(format!("clone: {e}")))?;
     let mut stream_write = stream;
 
     // Pipe stdin -> UDS in a background thread so the main thread can
