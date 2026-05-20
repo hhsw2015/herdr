@@ -455,6 +455,13 @@ impl HeadlessServer {
                 needs_render = true;
             }
 
+            // 2b. Forward TUI-queued mutation events (split, rename, move_tab,
+            // switch_workspace, etc.) into the API event hub so external
+            // subscribers (cmux) see TUI-side changes. App::run does this
+            // between drain_internal_events and drain_api_requests; mirror
+            // that here so headless server mode behaves identically.
+            self.app.drain_pending_state_events();
+
             // 3. Drain API requests.
             if self.drain_api_requests_with_shutdown_check() {
                 needs_render = true;
