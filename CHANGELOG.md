@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.5.12-cmux4] - 2026-05-20
+
+### Fixed
+- HeadlessServer::run (the loop behind `herdr-cmux --session NAME server`) now drains `state.pending_events` / `pending_layout_changes` every tick. cmux2/cmux3 added the buffer pattern but only wired the drain into App::run; in headless mode the buffers grew without ever being emitted, so TUI-side split / rename / reorder never reached cmux's `events.subscribe` stream. With cmux4, TUI mutations finally propagate to cmux in real time.
+
 ## [0.5.12-cmux3] - 2026-05-20
 
 ### Added
