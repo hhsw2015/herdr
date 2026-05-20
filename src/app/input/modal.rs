@@ -290,13 +290,15 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                     state.mark_session_dirty();
                     // Mirror api.rs `workspace.rename`: broadcast so cmux
                     // (and other API subscribers) pick up the new label.
-                    state.pending_events.push(crate::api::schema::EventEnvelope {
-                        event: crate::api::schema::EventKind::WorkspaceRenamed,
-                        data: crate::api::schema::EventData::WorkspaceRenamed {
-                            workspace_id: state.public_workspace_id(ws_idx),
-                            label: new_name,
-                        },
-                    });
+                    state
+                        .pending_events
+                        .push(crate::api::schema::EventEnvelope {
+                            event: crate::api::schema::EventKind::WorkspaceRenamed,
+                            data: crate::api::schema::EventData::WorkspaceRenamed {
+                                workspace_id: state.public_workspace_id(ws_idx),
+                                label: new_name,
+                            },
+                        });
                 }
                 Mode::RenameTab if state.creating_new_tab => {
                     state.request_new_tab = true;
@@ -329,14 +331,16 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                         if let Some((tab_idx, label)) = renamed_to {
                             // Mirror api.rs `tab.rename` for cmux & API subscribers.
                             if let Some(tab_id) = state.public_tab_id(ws_idx, tab_idx) {
-                                state.pending_events.push(crate::api::schema::EventEnvelope {
-                                    event: crate::api::schema::EventKind::TabRenamed,
-                                    data: crate::api::schema::EventData::TabRenamed {
-                                        tab_id,
-                                        workspace_id: state.public_workspace_id(ws_idx),
-                                        label,
-                                    },
-                                });
+                                state
+                                    .pending_events
+                                    .push(crate::api::schema::EventEnvelope {
+                                        event: crate::api::schema::EventKind::TabRenamed,
+                                        data: crate::api::schema::EventData::TabRenamed {
+                                            tab_id,
+                                            workspace_id: state.public_workspace_id(ws_idx),
+                                            label,
+                                        },
+                                    });
                             }
                         }
                     }
