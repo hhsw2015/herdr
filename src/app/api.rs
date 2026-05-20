@@ -1810,8 +1810,7 @@ impl App {
                     .get(self.state.workspaces[ws_idx].active_tab)
                     .map(|t| t.root_pane);
                 let ws = &mut self.state.workspaces[ws_idx];
-                let mut reordered: Vec<crate::workspace::Tab> =
-                    Vec::with_capacity(ws.tabs.len());
+                let mut reordered: Vec<crate::workspace::Tab> = Vec::with_capacity(ws.tabs.len());
                 let mut taken: Vec<Option<crate::workspace::Tab>> =
                     ws.tabs.drain(..).map(Some).collect();
                 for idx in &permutation {
@@ -1821,9 +1820,7 @@ impl App {
                 }
                 ws.tabs = reordered;
                 if let Some(root_pane) = active_tab_id_before {
-                    if let Some(new_idx) =
-                        ws.tabs.iter().position(|t| t.root_pane == root_pane)
-                    {
+                    if let Some(new_idx) = ws.tabs.iter().position(|t| t.root_pane == root_pane) {
                         ws.active_tab = new_idx;
                     }
                 }

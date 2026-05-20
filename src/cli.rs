@@ -1100,10 +1100,7 @@ fn api_bridge(args: &[String]) -> std::io::Result<i32> {
     let stream = match UnixStream::connect(&socket_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "api-bridge: connect {} failed: {e}",
-                socket_path.display()
-            );
+            eprintln!("api-bridge: connect {} failed: {e}", socket_path.display());
             return Ok(1);
         }
     };

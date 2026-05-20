@@ -555,6 +555,19 @@ impl AppState {
                 {
                     tab.layout.focus_pane(target);
                     self.mark_session_dirty();
+                    // Mirror api.rs `pane.focus` path: broadcast
+                    // PaneFocused so external subscribers (cmux) move
+                    // their focus to the same pane. Without this,
+                    // TUI-driven focus changes leave cmux's view stuck.
+                    if let Some(public_pane_id) = self.public_pane_id(ws_idx, target) {
+                        self.emit_event(crate::api::schema::EventEnvelope {
+                            event: crate::api::schema::EventKind::PaneFocused,
+                            data: crate::api::schema::EventData::PaneFocused {
+                                pane_id: public_pane_id,
+                                workspace_id: self.public_workspace_id(ws_idx),
+                            },
+                        });
+                    }
                 }
             }
         }
@@ -630,6 +643,24 @@ impl AppState {
             self.close_selected_workspace();
         } else {
             self.remove_unattached_terminal_ids(terminal_ids);
+            // Mirror api.rs `pane.close` path: broadcast LayoutChanged
+            // so external subscribers (cmux) reconcile their tree.
+            // Without this, TUI-driven closes leave cmux showing a
+            // pane that doesn't exist on the daemon.
+            if let Some(ws_idx) = active {
+                let tab_idx = self
+                    .workspaces
+                    .get(ws_idx)
+                    .map(|ws_ref| ws_ref.active_tab_index());
+                if let Some(tab_idx) = tab_idx {
+                    if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
+                        self.emit_event(crate::api::schema::EventEnvelope {
+                            event: crate::api::schema::EventKind::LayoutChanged,
+                            data: crate::api::schema::EventData::LayoutChanged { tree },
+                        });
+                    }
+                }
+            }
         }
     }
 

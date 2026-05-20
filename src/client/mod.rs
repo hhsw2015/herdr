@@ -427,14 +427,18 @@ pub fn run_raw_pty_attach(
         cell_height_px: 0,
         requested_encoding: RenderEncoding::RawPty,
     };
-    protocol::write_message(&mut stream, &hello).map_err(|e| {
-        io::Error::other(format!("hello write: {e}"))
-    })?;
+    protocol::write_message(&mut stream, &hello)
+        .map_err(|e| io::Error::other(format!("hello write: {e}")))?;
     let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
         .map_err(|e| io::Error::other(format!("welcome read: {e}")))?;
     match &welcome {
-        ServerMessage::Welcome { error: Some(reason), .. } => {
-            return Err(io::Error::other(format!("server rejected handshake: {reason}")));
+        ServerMessage::Welcome {
+            error: Some(reason),
+            ..
+        } => {
+            return Err(io::Error::other(format!(
+                "server rejected handshake: {reason}"
+            )));
         }
         ServerMessage::Welcome { encoding, .. } if !matches!(encoding, RenderEncoding::RawPty) => {
             return Err(io::Error::other(format!(
@@ -455,9 +459,8 @@ pub fn run_raw_pty_attach(
         terminal_id,
         takeover,
     };
-    protocol::write_message(&mut stream, &attach).map_err(|e| {
-        io::Error::other(format!("attach write: {e}"))
-    })?;
+    protocol::write_message(&mut stream, &attach)
+        .map_err(|e| io::Error::other(format!("attach write: {e}")))?;
 
     // Spawn stdin reader on a background thread that forwards keystrokes
     // to the server as ClientMessage::Input frames.

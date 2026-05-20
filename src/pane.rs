@@ -501,8 +501,7 @@ impl PaneRuntime {
                             // BEFORE the emulator processes them. send() returns
                             // Err only when there are zero subscribers — fine to
                             // ignore (broadcast tap is opportunistic).
-                            let _ = raw_pty_tx_reader
-                                .send(Bytes::copy_from_slice(&buf[..n]));
+                            let _ = raw_pty_tx_reader.send(Bytes::copy_from_slice(&buf[..n]));
 
                             let shell_pid = child_pid.load(Ordering::Acquire);
                             let result = terminal.process_pty_bytes(

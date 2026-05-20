@@ -1447,8 +1447,14 @@ mod tests {
         match request.method {
             Method::EventsSubscribe(params) => {
                 assert_eq!(params.subscriptions.len(), 2);
-                assert!(matches!(params.subscriptions[0], Subscription::LayoutChanged {}));
-                assert!(matches!(params.subscriptions[1], Subscription::TabReordered {}));
+                assert!(matches!(
+                    params.subscriptions[0],
+                    Subscription::LayoutChanged {}
+                ));
+                assert!(matches!(
+                    params.subscriptions[1],
+                    Subscription::TabReordered {}
+                ));
             }
             other => panic!("wrong method: {other:?}"),
         }

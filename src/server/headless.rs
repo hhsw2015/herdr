@@ -2575,8 +2575,7 @@ mod tests {
         assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&11));
 
         // Inject raw bytes including a CSI escape sequence.
-        let payload: bytes::Bytes =
-            bytes::Bytes::from_static(b"\x1b[1;31mRED\x1b[0m\nplain\r\n");
+        let payload: bytes::Bytes = bytes::Bytes::from_static(b"\x1b[1;31mRED\x1b[0m\nplain\r\n");
         let runtime = server
             .app
             .state
@@ -2630,8 +2629,7 @@ mod tests {
         let pane_id = workspace.tabs[0].root_pane;
         server.app.state.workspaces = vec![workspace];
         server.app.state.ensure_test_terminals();
-        let (runtime, mut pty_input_rx) =
-            crate::pane::PaneRuntime::test_with_channel(80, 24);
+        let (runtime, mut pty_input_rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
         server.app.state.insert_test_runtime(pane_id, runtime);
         let real_terminal_id = server.app.state.workspaces[0]
             .pane_state(pane_id)
@@ -2755,9 +2753,7 @@ mod tests {
         );
         assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&41));
 
-        assert!(
-            server.handle_internal_event_with_forwarding(AppEvent::PaneDied { pane_id })
-        );
+        assert!(server.handle_internal_event_with_forwarding(AppEvent::PaneDied { pane_id }));
         assert!(!server.clients.contains_key(&41));
         assert!(!server.terminal_attach_owners.contains_key(&terminal_id));
     }
