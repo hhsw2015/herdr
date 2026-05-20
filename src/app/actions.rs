@@ -314,13 +314,33 @@ impl AppState {
     }
 
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-            if ws.move_tab(source_idx, insert_idx) {
-                self.mark_session_dirty();
-                self.tab_scroll_follow_active = true;
-                self.refresh_tab_bar_view();
-            }
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let moved = self
+            .workspaces
+            .get_mut(ws_idx)
+            .map(|ws| ws.move_tab(source_idx, insert_idx))
+            .unwrap_or(false);
+        if !moved {
+            return;
         }
+        self.mark_session_dirty();
+        self.tab_scroll_follow_active = true;
+        self.refresh_tab_bar_view();
+        // Mirror api.rs `tab.reorder`: broadcast new ordering to API
+        // subscribers so cmux mirrors the new tab strip.
+        let tab_count = self.workspaces[ws_idx].tabs.len();
+        let tab_ids: Vec<String> = (0..tab_count)
+            .filter_map(|idx| self.public_tab_id(ws_idx, idx))
+            .collect();
+        self.pending_events.push(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::TabReordered,
+            data: crate::api::schema::EventData::TabReordered {
+                workspace_id: self.public_workspace_id(ws_idx),
+                tab_ids,
+            },
+        });
     }
 
     pub fn next_tab(&mut self) {

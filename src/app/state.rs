@@ -1026,6 +1026,13 @@ impl AppState {
         Some(format!("{}-{pane_number}", ws.id))
     }
 
+    /// Same shape as App's public_tab_id but operates on the raw state.
+    pub(crate) fn public_tab_id(&self, ws_idx: usize, tab_idx: usize) -> Option<String> {
+        let ws = self.workspaces.get(ws_idx)?;
+        ws.tabs.get(tab_idx)?;
+        Some(format!("{}:{}", ws.id, tab_idx + 1))
+    }
+
     pub fn sound_enabled(&self) -> bool {
         self.sound.enabled
     }

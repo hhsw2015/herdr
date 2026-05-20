@@ -283,10 +283,20 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             };
             match state.mode {
                 Mode::RenameWorkspace if !state.workspaces.is_empty() && !new_name.is_empty() => {
-                    let workspace_id = state.workspaces[state.selected].id.clone();
-                    state.workspaces[state.selected].set_custom_name(new_name);
+                    let ws_idx = state.selected;
+                    let workspace_id = state.workspaces[ws_idx].id.clone();
+                    state.workspaces[ws_idx].set_custom_name(new_name.clone());
                     crate::logging::workspace_renamed(&workspace_id);
                     state.mark_session_dirty();
+                    // Mirror api.rs `workspace.rename`: broadcast so cmux
+                    // (and other API subscribers) pick up the new label.
+                    state.pending_events.push(crate::api::schema::EventEnvelope {
+                        event: crate::api::schema::EventKind::WorkspaceRenamed,
+                        data: crate::api::schema::EventData::WorkspaceRenamed {
+                            workspace_id: state.public_workspace_id(ws_idx),
+                            label: new_name,
+                        },
+                    });
                 }
                 Mode::RenameTab if state.creating_new_tab => {
                     state.request_new_tab = true;
@@ -300,6 +310,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                 }
                 Mode::RenameTab => {
                     if let Some(ws_idx) = state.active {
+                        let mut renamed_to: Option<(usize, String)> = None;
                         if let Some(ws) = state.workspaces.get_mut(ws_idx) {
                             let workspace_id = ws.id.clone();
                             let active_tab = ws.active_tab;
@@ -307,11 +318,25 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                                 let keep_auto_name =
                                     tab.is_auto_named() && new_name == tab.number.to_string();
                                 if !new_name.is_empty() && !keep_auto_name {
-                                    tab.set_custom_name(new_name);
+                                    tab.set_custom_name(new_name.clone());
                                     let tab_id = format!("{}:{}", workspace_id, active_tab + 1);
                                     crate::logging::tab_renamed(&workspace_id, &tab_id);
                                     state.mark_session_dirty();
+                                    renamed_to = Some((active_tab, new_name));
                                 }
+                            }
+                        }
+                        if let Some((tab_idx, label)) = renamed_to {
+                            // Mirror api.rs `tab.rename` for cmux & API subscribers.
+                            if let Some(tab_id) = state.public_tab_id(ws_idx, tab_idx) {
+                                state.pending_events.push(crate::api::schema::EventEnvelope {
+                                    event: crate::api::schema::EventKind::TabRenamed,
+                                    data: crate::api::schema::EventData::TabRenamed {
+                                        tab_id,
+                                        workspace_id: state.public_workspace_id(ws_idx),
+                                        label,
+                                    },
+                                });
                             }
                         }
                     }
