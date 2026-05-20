@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.5.12-cmux3] - 2026-05-20
+
+### Added
+- TUI rename modal and tab reorder action now emit `WorkspaceRenamed`, `TabRenamed`, and `TabReordered` API events alongside the existing JSON-RPC handlers. Cmux (and any other API subscriber) now picks up rename/reorder mutations regardless of which surface initiated them.
+
 ## [0.5.12-cmux2] - 2026-05-20
 
 ### Added
