@@ -120,6 +120,14 @@ impl AppState {
             let workspace_id = self.workspaces[idx].id.clone();
             crate::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
+            // Mirror api.rs `workspace.focus`: broadcast so external
+            // subscribers (cmux) follow the focus into the matching tab.
+            self.emit_event(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::WorkspaceFocused,
+                data: crate::api::schema::EventData::WorkspaceFocused {
+                    workspace_id: self.public_workspace_id(idx),
+                },
+            });
             if matches!(
                 self.agent_panel_scope,
                 crate::app::state::AgentPanelScope::CurrentWorkspace
@@ -209,6 +217,15 @@ impl AppState {
             crate::logging::tab_focused(&workspace_id, &tab_id);
             self.mark_session_dirty();
             self.tab_scroll_follow_active = true;
+            // Mirror api.rs tab.focus path so external subscribers
+            // (cmux) follow tab switches inside a workspace.
+            self.emit_event(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::TabFocused,
+                data: crate::api::schema::EventData::TabFocused {
+                    tab_id: tab_id.clone(),
+                    workspace_id: self.public_workspace_id(ws_idx),
+                },
+            });
             self.refresh_tab_bar_view();
         }
     }
@@ -480,6 +497,17 @@ impl AppState {
         let terminal_ids = self.terminal_ids_for_workspace(self.selected);
         let workspace_id = self.workspaces[self.selected].id.clone();
         crate::logging::workspace_closed(&workspace_id);
+        // Mirror api.rs workspace.close: broadcast WorkspaceClosed
+        // before mutating the vec so subscribers (cmux) tear down
+        // their bindings before we drop terminal state. Keep the id
+        // in a local since `self.workspaces.remove` invalidates it.
+        let closed_workspace_id = workspace_id.clone();
+        self.emit_event(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::WorkspaceClosed,
+            data: crate::api::schema::EventData::WorkspaceClosed {
+                workspace_id: closed_workspace_id,
+            },
+        });
         self.workspaces.remove(self.selected);
         self.remove_unattached_terminal_ids(terminal_ids);
         if self.workspaces.is_empty() {
