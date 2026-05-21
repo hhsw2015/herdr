@@ -1094,6 +1094,17 @@ impl App {
                     event: crate::api::schema::EventKind::PaneCreated,
                     data: crate::api::schema::EventData::PaneCreated { pane: pane.clone() },
                 });
+                // Mirror TUI split path: also emit LayoutChanged so
+                // subscribers that track the tree (cmux's
+                // HerdrInboundLayoutSync) can materialize the new pane
+                // without subscribing to pane.created. PaneCreated
+                // alone doesn't carry the new tree shape.
+                if let Some(tree) = self.layout_tree(ws_idx, target_tab_idx) {
+                    self.emit_event(crate::api::schema::EventEnvelope {
+                        event: crate::api::schema::EventKind::LayoutChanged,
+                        data: crate::api::schema::EventData::LayoutChanged { tree },
+                    });
+                }
                 SuccessResponse {
                     id: request.id,
                     result: ResponseResult::PaneInfo { pane },
@@ -1853,6 +1864,11 @@ impl App {
                 };
                 let workspace_id = self.state.workspaces[ws_idx].id.clone();
                 let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+                // Capture the pane's tab BEFORE close so we can emit
+                // LayoutChanged afterwards — once close_pane runs the
+                // pane is gone from the layout and find_tab_index_for_pane
+                // returns None.
+                let tab_idx_pre_close = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id);
                 let should_close_workspace = {
                     let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                         return serde_json::to_string(&ErrorResponse {
@@ -1890,6 +1906,18 @@ impl App {
                             workspace_id,
                         },
                     });
+                    // Also emit LayoutChanged so subscribers tracking
+                    // the tree (cmux's HerdrInboundLayoutSync) drop
+                    // the closed pane from the layout. PaneClosed
+                    // alone doesn't carry the new tree shape.
+                    if let Some(tab_idx) = tab_idx_pre_close {
+                        if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
+                            self.emit_event(crate::api::schema::EventEnvelope {
+                                event: crate::api::schema::EventKind::LayoutChanged,
+                                data: crate::api::schema::EventData::LayoutChanged { tree },
+                            });
+                        }
+                    }
                 }
                 SuccessResponse {
                     id: request.id,

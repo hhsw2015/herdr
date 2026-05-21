@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.5.12-cmux8] - 2026-05-21
+
+### Fixed
+- `pane.split` and `pane.close` now also emit `LayoutChanged`. cmux subscribes to layout.changed (not pane.created/closed) and uses the LayoutChanged tree to materialize / drop panes via HerdrInboundLayoutSync; without this emit cmux missed every TUI-driven split / close. Caught by an end-to-end audit script that subscribes with cmux's exact event list and walks every mutation type.
+
 ## [0.5.12-cmux7] - 2026-05-21
 
 ### Added
