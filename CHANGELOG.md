@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.5.12-cmux9] - 2026-05-21
+
+### Fixed
+- TUI mouse drag of split divider now emits `LayoutChanged`. The `mouse.rs` PaneSplit drag handler mutated `ws.layout.set_ratio_at()` but never pushed to `pending_layout_changes`, so cmux's `HerdrDividerSync` never saw remote ratio updates and split positions drifted between TUI and cmux until a structural mutation forced a refresh. Mirrors the keyboard `resize_pane` path and the JSON-RPC `pane.set_split_ratio` handler. Also gates `mark_session_dirty()` on actual mutation so failed (path-not-found) drags don't dirty the session.
+
+### Added
+- New `WorkspaceReordered` event broadcast from `move_workspace` (TUI drag-reorder of sidebar workspaces). Adds `Subscription::WorkspaceReordered`, `EventKind::WorkspaceReordered`, and `EventData::WorkspaceReordered { workspace_ids }`. cmux subscribes and refreshes the sidebar list on receipt. Emit is suppressed when the resolved target index equals source (no-op move).
+
 ## [0.5.12-cmux8] - 2026-05-21
 
 ### Fixed
