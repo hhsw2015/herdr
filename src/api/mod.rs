@@ -816,6 +816,10 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::TabReordered,
                 last_sequence: 0,
             })),
+            Subscription::WorkspaceReordered {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorkspaceReordered,
+                last_sequence: 0,
+            })),
             Subscription::PaneOutputMatched {
                 pane_id,
                 source,

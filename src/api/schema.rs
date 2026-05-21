@@ -451,6 +451,8 @@ pub enum Subscription {
     LayoutChanged {},
     #[serde(rename = "tab.reordered")]
     TabReordered {},
+    #[serde(rename = "workspace.reordered")]
+    WorkspaceReordered {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -586,6 +588,7 @@ pub enum EventKind {
     PaneAgentStatusChanged,
     LayoutChanged,
     TabReordered,
+    WorkspaceReordered,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -878,6 +881,9 @@ pub enum EventData {
     TabReordered {
         workspace_id: String,
         tab_ids: Vec<String>,
+    },
+    WorkspaceReordered {
+        workspace_ids: Vec<String>,
     },
 }
 

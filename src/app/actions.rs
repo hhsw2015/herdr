@@ -299,6 +299,15 @@ impl AppState {
             .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id))
             .unwrap_or(0);
         self.ensure_workspace_visible(self.selected);
+        // Mirror move_tab's TabReordered emit: TUI drag of workspace order
+        // mutates persistent state; broadcast WorkspaceReordered so cmux
+        // and other clients reorder their sidebar to match.
+        let workspace_ids: Vec<String> =
+            self.workspaces.iter().map(|ws| ws.id.clone()).collect();
+        self.pending_events.push(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::WorkspaceReordered,
+            data: crate::api::schema::EventData::WorkspaceReordered { workspace_ids },
+        });
     }
 
     pub fn scroll_tabs_left(&mut self) {
