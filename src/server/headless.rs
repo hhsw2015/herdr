@@ -1390,22 +1390,58 @@ impl HeadlessServer {
             .get(&client_id)
             .map(|c| c.render_state.is_raw_pty())
             .unwrap_or(false);
-        let raw_pty_rx = if is_raw_pty {
+        let raw_pty_replay = if is_raw_pty {
             self.app
                 .state
                 .terminal_runtimes
                 .get(&real_terminal_id)
-                .map(|r| r.subscribe_raw_pty())
+                .map(|r| r.subscribe_raw_pty_with_replay())
         } else {
             None
         };
         if let Some(runtime) = self.app.state.terminal_runtimes.get(&real_terminal_id) {
             runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
         }
-        if let Some(rx) = raw_pty_rx {
+        if let Some((snapshot, rx)) = raw_pty_replay {
+            // tmux semantics: a fresh raw-pty client (cmux reattach
+            // after relaunch) sees the existing terminal state, not a
+            // blank pane. Flush the per-pane history ring as the first
+            // RawPtyChunk before live broadcast forwarding starts.
+            if !snapshot.is_empty() {
+                self.send_raw_pty_chunk(client_id, snapshot);
+            }
             self.spawn_raw_pty_forwarder(client_id, rx);
         }
         true
+    }
+
+    /// Send a single RawPtyChunk synchronously. Used to flush the
+    /// pane's replay snapshot before the live broadcast forwarder
+    /// starts, so the client sees existing terminal state followed by
+    /// new bytes without races (the snapshot was captured under the
+    /// same lock that gates broadcast appends, so subsequent
+    /// broadcast deliveries are guaranteed contiguous with it).
+    fn send_raw_pty_chunk(&mut self, client_id: u64, bytes: bytes::Bytes) {
+        let Some(writer) = self
+            .clients
+            .get(&client_id)
+            .and_then(|c| c.writer.as_ref().cloned())
+        else {
+            return;
+        };
+        let msg = ServerMessage::RawPtyChunk {
+            bytes: bytes.to_vec(),
+        };
+        let serialized = match HeadlessServer::frame_server_message(&msg) {
+            Ok(framed) => framed,
+            Err(err) => {
+                debug!(client_id, err = %err, "raw pty replay serialize failed");
+                return;
+            }
+        };
+        if writer.control.send(serialized).is_err() {
+            debug!(client_id, "raw pty replay writer closed");
+        }
     }
 
     /// Spawn a tokio task that forwards raw PTY bytes via a broadcast

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.0-cmux2] - 2026-05-21
+
+### Added
+- raw-pty-attach now replays a per-pane history snapshot (256 KiB ring) before live broadcast forwarding starts, giving cmux reattach tmux-like semantics: when the user quits cmux and relaunches, the pane shows the existing terminal state instead of a blank surface. The reader appends to the ring under the same lock that `subscribe_raw_pty_with_replay` reads, so a contiguous prefix + future deliveries are guaranteed.
+
 ## [0.6.0-cmux1] - 2026-05-21
 
 ### Changed
