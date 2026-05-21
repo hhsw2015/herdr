@@ -498,8 +498,8 @@ impl AppState {
                                 if let Some(ws) = self.workspaces.get_mut(ws_idx) {
                                     let tab_idx = ws.active_tab_index();
                                     let changed = ws.layout.set_ratio_at(&path, ratio);
-                                    self.mark_session_dirty();
                                     if changed {
+                                        self.mark_session_dirty();
                                         // Mirror api.rs pane.set_split_ratio: TUI mouse
                                         // drag mutates layout ratios; broadcast LayoutChanged
                                         // so cmux's HerdrDividerSync re-primes lastSeen and

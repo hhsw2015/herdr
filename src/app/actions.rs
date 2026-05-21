@@ -276,6 +276,14 @@ impl AppState {
         if source_idx >= self.workspaces.len() || insert_idx > self.workspaces.len() {
             return;
         }
+        let resolved_target = if source_idx < insert_idx {
+            insert_idx.saturating_sub(1)
+        } else {
+            insert_idx
+        };
+        if resolved_target == source_idx {
+            return;
+        }
 
         self.mark_session_dirty();
 
