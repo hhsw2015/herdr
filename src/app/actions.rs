@@ -697,16 +697,29 @@ impl AppState {
     }
 
     pub fn toggle_zoom(&mut self) {
-        if let Some(tab) = self
-            .active
-            .and_then(|i| self.workspaces.get_mut(i))
-            .and_then(|ws| ws.active_tab_mut())
-        {
-            if tab.layout.pane_count() > 1 {
-                tab.zoomed = !tab.zoomed;
-                self.mark_session_dirty();
-            }
+        let Some(ws_idx) = self.active else { return };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else { return };
+        let workspace_id = ws.id.clone();
+        let tab_idx = ws.active_tab_index();
+        let Some(tab) = ws.active_tab_mut() else { return };
+        if tab.layout.pane_count() <= 1 {
+            return;
         }
+        tab.zoomed = !tab.zoomed;
+        let zoomed = tab.zoomed;
+        let focused_pane = tab.layout.focused();
+        self.mark_session_dirty();
+        let tab_id = format!("{}:{}", workspace_id, tab_idx + 1);
+        let pane_id = format!("{}-{}", workspace_id, focused_pane.raw());
+        self.pending_events.push(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::PaneZoomed,
+            data: crate::api::schema::EventData::PaneZoomed {
+                workspace_id,
+                tab_id,
+                pane_id,
+                zoomed,
+            },
+        });
     }
 
     pub fn close_pane(&mut self) {

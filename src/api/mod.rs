@@ -427,6 +427,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneSetSplitRatio(_) => "pane.set_split_ratio",
         Method::PaneSwap(_) => "pane.swap",
         Method::PaneFocus(_) => "pane.focus",
+        Method::PaneSetZoom(_) => "pane.set_zoom",
         Method::TabReorder(_) => "tab.reorder",
         Method::EventsSubscribe(_) => "events.subscribe",
         Method::EventsWait(_) => "events.wait",
@@ -818,6 +819,10 @@ impl ActiveSubscription {
             })),
             Subscription::WorkspaceReordered {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceReordered,
+                last_sequence: 0,
+            })),
+            Subscription::PaneZoomed {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::PaneZoomed,
                 last_sequence: 0,
             })),
             Subscription::PaneOutputMatched {

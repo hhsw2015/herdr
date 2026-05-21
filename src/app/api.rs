@@ -1744,6 +1744,60 @@ impl App {
                     result: ResponseResult::PaneInfo { pane },
                 }
             }
+            Method::PaneSetZoom(params) => {
+                let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let Some(tab_idx) = self
+                    .state
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| ws.find_tab_index_for_pane(pane_id))
+                else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let workspace_id = self.public_workspace_id(ws_idx);
+                let tab_id = format!("{}:{}", workspace_id, tab_idx + 1);
+                if let Some(tab) = self
+                    .state
+                    .workspaces
+                    .get_mut(ws_idx)
+                    .and_then(|ws| ws.tabs.get_mut(tab_idx))
+                {
+                    if tab.layout.pane_count() > 1 {
+                        tab.zoomed = params.zoomed;
+                        self.state.mark_session_dirty();
+                    }
+                }
+                self.emit_event(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::PaneZoomed,
+                    data: crate::api::schema::EventData::PaneZoomed {
+                        workspace_id,
+                        tab_id,
+                        pane_id: params.pane_id.clone(),
+                        zoomed: params.zoomed,
+                    },
+                });
+                self.schedule_session_save();
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::Ok {},
+                }
+            }
             Method::TabReorder(params) => {
                 let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
                     return serde_json::to_string(&ErrorResponse {

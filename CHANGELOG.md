@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.0-cmux3] - 2026-05-21
+
+### Added
+- `pane.set_zoom` JSON-RPC method and matching `pane.zoomed` event broadcast both from `toggle_zoom` (TUI keybind) and the new RPC handler. Lets external clients (cmux) mirror tmux-like single-pane zoom across attached views — the daemon now emits `(workspace_id, tab_id, pane_id, zoomed)` whenever the active tab's zoom state flips, regardless of which client triggered it.
+
 ## [0.6.0-cmux2] - 2026-05-21
 
 ### Added

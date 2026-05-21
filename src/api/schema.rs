@@ -88,6 +88,8 @@ pub enum Method {
     PaneSwap(PaneSwapParams),
     #[serde(rename = "pane.focus")]
     PaneFocus(PaneTarget),
+    #[serde(rename = "pane.set_zoom")]
+    PaneSetZoom(PaneSetZoomParams),
     #[serde(rename = "tab.reorder")]
     TabReorder(TabReorderParams),
     #[serde(rename = "events.subscribe")]
@@ -143,6 +145,12 @@ pub struct PaneSetSplitRatioParams {
     /// `true` = second child. Empty vector targets the root split.
     pub path: Vec<bool>,
     pub ratio: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSetZoomParams {
+    pub pane_id: String,
+    pub zoomed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,6 +461,8 @@ pub enum Subscription {
     TabReordered {},
     #[serde(rename = "workspace.reordered")]
     WorkspaceReordered {},
+    #[serde(rename = "pane.zoomed")]
+    PaneZoomed {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,6 +599,7 @@ pub enum EventKind {
     LayoutChanged,
     TabReordered,
     WorkspaceReordered,
+    PaneZoomed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -884,6 +895,12 @@ pub enum EventData {
     },
     WorkspaceReordered {
         workspace_ids: Vec<String>,
+    },
+    PaneZoomed {
+        workspace_id: String,
+        tab_id: String,
+        pane_id: String,
+        zoomed: bool,
     },
 }
 
