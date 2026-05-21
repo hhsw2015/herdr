@@ -175,7 +175,7 @@ impl AppState {
         }
 
         let footer = self.sidebar_footer_rect();
-        let width = if self.update_available.is_some() {
+        let width = if self.global_menu_attention_badge_visible() {
             8
         } else {
             6
@@ -192,7 +192,7 @@ impl AppState {
         } else if self.latest_release_notes_available {
             labels.push("what's new");
         }
-        labels.push(if self.quit_detaches { "detach" } else { "quit" });
+        labels.push("detach");
         labels
     }
 
@@ -203,8 +203,12 @@ impl AppState {
         let content_width = labels
             .iter()
             .map(|label| {
-                let extra = if *label == "update ready" { 2 } else { 0 };
-                label.chars().count() as u16 + extra
+                let badge_width = if self.global_menu_item_has_badge(label) {
+                    2
+                } else {
+                    0
+                };
+                label.chars().count() as u16 + badge_width
             })
             .max()
             .unwrap_or(8)
@@ -574,7 +578,7 @@ mod tests {
                 "keybinds",
                 "reload config",
                 "update ready",
-                "quit"
+                "detach"
             ]
         );
         assert!(!app.state.should_quit);
@@ -583,7 +587,7 @@ mod tests {
     #[test]
     fn persistence_mode_menu_surfaces_detach_action() {
         let mut app = app_for_mouse_test();
-        app.state.quit_detaches = true;
+        app.state.detach_exits = false;
 
         let launcher = app.state.global_launcher_rect();
         app.handle_mouse(mouse(
@@ -621,7 +625,7 @@ mod tests {
                 "keybinds",
                 "reload config",
                 "what's new",
-                "quit"
+                "detach"
             ]
         );
     }

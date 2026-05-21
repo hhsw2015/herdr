@@ -153,6 +153,21 @@ fn agent_panel_scope_from_config(
     }
 }
 
+/// Parse the configured agent name list into a deduplicated set of `Agent`
+/// values. Unknown agent names are silently dropped so a typo cannot disable
+/// other valid entries.
+fn parse_cjk_ime_agents(names: &[String]) -> Vec<crate::detect::Agent> {
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        if let Some(agent) = crate::detect::parse_agent_label(name) {
+            if !out.contains(&agent) {
+                out.push(agent);
+            }
+        }
+    }
+    out
+}
+
 /// Resolve the palette from config: base theme + optional custom overrides.
 fn resolve_palette(config: &crate::config::Config) -> state::Palette {
     resolve_palette_with_legacy_accent(config, true)
@@ -338,7 +353,7 @@ impl App {
             selected,
             mode,
             should_quit: false,
-            quit_detaches: !no_session,
+            detach_exits: no_session,
             detach_requested: false,
             request_new_workspace: false,
             request_new_tab: false,
@@ -414,6 +429,10 @@ impl App {
             confirm_close: config.ui.confirm_close,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
+            cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
+            cjk_ime_agents: parse_cjk_ime_agents(&config.experimental.cjk_ime_agents),
+            cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
             kitty_graphics_enabled: config.experimental.kitty_graphics,
             default_shell: config.terminal.default_shell.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
@@ -468,10 +487,7 @@ impl App {
         });
 
         Self {
-            config_diagnostic_deadline: state
-                .config_diagnostic
-                .as_ref()
-                .map(|_| Instant::now() + Duration::from_secs(8)),
+            config_diagnostic_deadline: None,
             toast_deadline: None,
             state,
             event_tx,
@@ -803,7 +819,7 @@ impl App {
                 self.state.toast = None;
                 self.state.config_diagnostic =
                     crate::config::config_diagnostic_summary(&diagnostics);
-                self.config_diagnostic_deadline = Some(Instant::now() + Duration::from_secs(8));
+                self.config_diagnostic_deadline = None;
                 crate::config::ConfigReloadReport {
                     status: crate::config::ConfigReloadStatus::Failed,
                     diagnostics,
@@ -833,11 +849,11 @@ impl App {
                     self.state.keybinds = live.keybinds;
                 }
                 Err(keybind_diagnostics) => {
-                    let mut message = keybind_diagnostics.join("; ");
-                    if !message.contains("keeping current keybinds") {
-                        message.push_str("; keeping current keybinds");
-                    }
-                    diagnostics.push(message);
+                    diagnostics.extend(
+                        keybind_diagnostics
+                            .into_iter()
+                            .map(|diagnostic| format!("{diagnostic}; kept current keybinds")),
+                    );
                 }
             }
         }
@@ -896,6 +912,13 @@ impl App {
             if was_kitty_graphics_enabled && !config.experimental.kitty_graphics {
                 let _ = crate::kitty_graphics::clear_all_host_graphics();
             }
+            self.state.reveal_hidden_cursor_for_cjk_ime =
+                config.experimental.reveal_hidden_cursor_for_cjk_ime;
+            self.state.cjk_ime_agent_filter_configured =
+                !config.experimental.cjk_ime_agents.is_empty();
+            self.state.cjk_ime_agents = parse_cjk_ime_agents(&config.experimental.cjk_ime_agents);
+            self.state.cjk_ime_cursor_shape =
+                config.experimental.cjk_ime_cursor_shape.to_decscusr();
         }
 
         if !invalid_section("advanced") {
@@ -934,7 +957,7 @@ impl App {
             }
         } else {
             self.state.config_diagnostic = crate::config::config_diagnostic_summary(&diagnostics);
-            self.config_diagnostic_deadline = Some(Instant::now() + Duration::from_secs(8));
+            self.config_diagnostic_deadline = None;
             if notify_success {
                 self.state.toast = Some(crate::app::state::ToastNotification {
                     kind: crate::app::state::ToastKind::UpdateInstalled,
@@ -1054,6 +1077,9 @@ impl App {
     fn handle_non_terminal_key(&mut self, key: crate::input::TerminalKey) {
         let key_event = key.as_key_event();
         match self.state.mode {
+            Mode::Prefix => {
+                self.handle_prefix_key(key);
+            }
             Mode::Navigate => {
                 self.handle_navigate_key(key);
             }
@@ -1061,7 +1087,7 @@ impl App {
                 input::handle_rename_key(&mut self.state, key_event);
             }
             Mode::Resize => {
-                input::handle_resize_key(&mut self.state, key_event);
+                input::handle_resize_key(&mut self.state, key);
             }
             Mode::ConfirmClose => {
                 input::handle_confirm_close_key(&mut self.state, key_event);
@@ -1110,7 +1136,7 @@ mod tests {
     use crate::detect::{Agent, AgentState};
     use crate::terminal::TerminalRuntime;
     use crate::workspace::Workspace;
-    use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use std::sync::{Mutex, OnceLock};
 
     fn raw_key(
@@ -1336,7 +1362,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[terminal]\ndefault_shell = \"nu\"\n[keys]\nnew_workspace = \"g\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\n[ui.toast]\ndelivery = \"herdr\"\n",
+            "[terminal]\ndefault_shell = \"nu\"\n[keys]\nnew_workspace = \"prefix+g\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\n[ui.toast]\ndelivery = \"herdr\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1347,10 +1373,11 @@ mod tests {
         assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
         assert_eq!(app.state.prefix_code, KeyCode::Char('a'));
         assert_eq!(app.state.prefix_mods, KeyModifiers::CONTROL);
-        assert_eq!(
-            app.state.keybinds.new_workspace,
-            (KeyCode::Char('g'), KeyModifiers::empty())
-        );
+        assert!(app
+            .state
+            .keybinds
+            .new_workspace
+            .matches_prefix(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty())));
         assert_eq!(
             app.state.toast_config.delivery,
             crate::config::ToastDelivery::Herdr
@@ -1529,7 +1556,7 @@ mod tests {
 
         let mut app = test_app();
         let original_prefix = (app.state.prefix_code, app.state.prefix_mods);
-        let original_keybinds = app.state.keybinds.new_workspace;
+        let original_keybinds = app.state.keybinds.new_workspace.clone();
         let report = app.reload_config();
 
         assert_eq!(report.status, crate::config::ConfigReloadStatus::Partial);
@@ -1547,8 +1574,7 @@ mod tests {
             .config_diagnostic
             .as_deref()
             .is_some_and(|message| {
-                message.contains("keys.new_workspace")
-                    && message.contains("keeping current keybinds")
+                message.contains("keys.new_workspace") && message.contains("kept current keybinds")
             }));
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
@@ -1562,7 +1588,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[keys]\nnew_workspace = \"g\"\n[ui.toast]\ndelivery = \"desktop\"\n",
+            "[keys]\nnew_workspace = \"prefix+g\"\n[ui.toast]\ndelivery = \"desktop\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1572,10 +1598,11 @@ mod tests {
         let report = app.reload_config();
 
         assert_eq!(report.status, crate::config::ConfigReloadStatus::Partial);
-        assert_eq!(
-            app.state.keybinds.new_workspace,
-            (KeyCode::Char('g'), KeyModifiers::empty())
-        );
+        assert!(app
+            .state
+            .keybinds
+            .new_workspace
+            .matches_prefix(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty())));
         assert_eq!(
             app.state.toast_config.delivery,
             crate::config::ToastDelivery::Herdr
@@ -1656,7 +1683,7 @@ mod tests {
 
         let mut app = test_app();
         let original_prefix = (app.state.prefix_code, app.state.prefix_mods);
-        let original_keybinds = app.state.keybinds.new_workspace;
+        let original_keybinds = app.state.keybinds.new_workspace.clone();
         let original_toast_delivery = app.state.toast_config.delivery;
         let report = app.reload_config();
 
@@ -2515,7 +2542,7 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("test")];
         app.state.active = Some(0);
         app.state.selected = 0;
-        app.state.quit_detaches = true;
+        app.state.detach_exits = false;
 
         // Start in navigate mode.
         app.state.mode = Mode::Navigate;
@@ -2541,7 +2568,7 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("test")];
         app.state.active = Some(0);
         app.state.selected = 0;
-        app.state.quit_detaches = true;
+        app.state.detach_exits = false;
 
         // Start in terminal mode (default after workspace creation).
         app.state.mode = Mode::Terminal;
@@ -2553,8 +2580,8 @@ mod tests {
 
         assert_eq!(
             app.state.mode,
-            Mode::Navigate,
-            "prefix key should enter navigate mode"
+            Mode::Prefix,
+            "prefix key should enter prefix mode"
         );
         assert!(
             !app.state.detach_requested,
@@ -2590,7 +2617,7 @@ mod tests {
         app.state.prefix_mods = KeyModifiers::CONTROL;
 
         app.route_client_input(vec![0x0c]);
-        assert_eq!(app.state.mode, Mode::Navigate);
+        assert_eq!(app.state.mode, Mode::Prefix);
 
         app.route_client_input(vec![0x0c]);
         assert_eq!(app.state.mode, Mode::Terminal);

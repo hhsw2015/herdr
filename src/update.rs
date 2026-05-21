@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 const UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
@@ -100,7 +100,28 @@ struct UpdateManifest {
     protocol: Option<u32>,
     notes: String,
     assets: BTreeMap<String, String>,
-    announcement: Option<crate::product_announcements::ManifestAnnouncement>,
+    announcement: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_manifest_releases")]
+    releases: BTreeMap<String, serde_json::Value>,
+}
+
+fn deserialize_manifest_releases<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::Object(object)) => object.into_iter().collect(),
+        _ => BTreeMap::new(),
+    })
+}
+
+#[derive(Deserialize)]
+struct ManifestReleaseMetadata {
+    notes: String,
+    announcement: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +139,24 @@ impl UpdateManifest {
         self.assets.get(&format!("{os}-{arch}")).cloned()
     }
 
+    fn metadata_for_version(&self, version: &Version) -> Option<ManifestReleaseMetadata> {
+        let version = version.to_string();
+        if self.version.trim_start_matches('v') == version {
+            return Some(ManifestReleaseMetadata {
+                notes: self.notes.clone(),
+                announcement: self.announcement.clone(),
+            });
+        }
+
+        self.releases.get(&version).and_then(|release| {
+            let metadata =
+                serde_json::from_value::<ManifestReleaseMetadata>(release.clone()).ok()?;
+            (!metadata.notes_body().is_empty()).then_some(metadata)
+        })
+    }
+}
+
+impl ManifestReleaseMetadata {
     fn notes_body(&self) -> String {
         self.notes.trim().to_string()
     }
@@ -159,16 +198,29 @@ fn fetch_update_manifest() -> Result<UpdateManifest, String> {
         .map_err(|e| format!("failed to parse update manifest JSON: {e}"))
 }
 
-fn handle_manifest_announcement(manifest: &UpdateManifest) {
-    if let Err(err) = crate::product_announcements::save_manifest_announcement(
-        &manifest.version,
-        manifest.announcement.as_ref(),
-    ) {
+fn handle_manifest_announcement(version: &str, value: Option<&serde_json::Value>) {
+    let announcement = match value {
+        Some(value) => match serde_json::from_value::<
+            crate::product_announcements::ManifestAnnouncement,
+        >(value.clone())
+        {
+            Ok(announcement) => Some(announcement),
+            Err(err) => {
+                tracing::warn!("skipping invalid product announcement in update manifest: {err}");
+                None
+            }
+        },
+        None => None,
+    };
+
+    if let Err(err) =
+        crate::product_announcements::save_manifest_announcement(version, announcement.as_ref())
+    {
         tracing::warn!("failed to save product announcement: {err}");
     }
 }
 
-fn release_info_from_manifest(manifest: UpdateManifest) -> Result<Option<ReleaseInfo>, String> {
+fn release_info_from_manifest(manifest: &UpdateManifest) -> Result<Option<ReleaseInfo>, String> {
     let current = Version::current();
     let latest = Version::parse(&manifest.version)
         .ok_or_else(|| format!("invalid version in update manifest: {}", manifest.version))?;
@@ -177,7 +229,10 @@ fn release_info_from_manifest(manifest: UpdateManifest) -> Result<Option<Release
         return Ok(None); // up to date
     }
 
-    let notes_body = manifest.notes_body();
+    let metadata = manifest
+        .metadata_for_version(&latest)
+        .ok_or_else(|| format!("missing release metadata for v{latest}"))?;
+    let notes_body = metadata.notes_body();
     if notes_body.is_empty() {
         return Err("update manifest notes are empty".into());
     }
@@ -198,8 +253,16 @@ fn release_info_from_manifest(manifest: UpdateManifest) -> Result<Option<Release
 /// Check the hosted update manifest for the latest release. Returns release info if newer.
 fn check_latest() -> Result<Option<ReleaseInfo>, String> {
     let manifest = fetch_update_manifest()?;
-    handle_manifest_announcement(&manifest);
-    release_info_from_manifest(manifest)
+    let release = release_info_from_manifest(&manifest)?;
+    if let Some(release) = &release {
+        if let Some(metadata) = manifest.metadata_for_version(&release.version) {
+            handle_manifest_announcement(
+                &release.version.to_string(),
+                metadata.announcement.as_ref(),
+            );
+        }
+    }
+    Ok(release)
 }
 
 fn parse_homebrew_formula_stable_version(input: &[u8]) -> Result<Version, String> {
@@ -1048,10 +1111,6 @@ pub fn auto_update(events: tokio::sync::mpsc::Sender<crate::events::AppEvent>) {
 }
 
 fn auto_update_homebrew(events: tokio::sync::mpsc::Sender<crate::events::AppEvent>) {
-    if let Ok(manifest) = fetch_update_manifest() {
-        handle_manifest_announcement(&manifest);
-    }
-
     let version = match check_homebrew_latest() {
         Ok(Some(version)) => version,
         Ok(None) => return,
@@ -1079,9 +1138,13 @@ fn auto_update_homebrew(events: tokio::sync::mpsc::Sender<crate::events::AppEven
 }
 
 fn homebrew_release_notes_body(version: &Version) -> String {
-    if let Ok(Some(release)) = check_latest() {
-        if release.version == *version {
-            return release.notes_body;
+    if let Ok(manifest) = fetch_update_manifest() {
+        if let Some(metadata) = manifest.metadata_for_version(version) {
+            let notes_body = metadata.notes_body();
+            if !notes_body.is_empty() {
+                handle_manifest_announcement(&version.to_string(), metadata.announcement.as_ref());
+                return notes_body;
+            }
         }
     }
 
@@ -1525,17 +1588,122 @@ mod tests {
         assert_eq!(manifest.version, "0.2.0");
         assert_eq!(manifest.protocol, Some(4));
         assert_eq!(manifest.assets.len(), 2);
-        assert_eq!(manifest.notes_body(), "### Changed\n- One");
+        assert_eq!(
+            manifest
+                .metadata_for_version(&Version::parse("0.2.0").unwrap())
+                .expect("metadata")
+                .notes_body(),
+            "### Changed\n- One"
+        );
         assert_eq!(
             manifest
                 .announcement
                 .as_ref()
-                .map(|announcement| announcement.id.as_str()),
+                .and_then(|announcement| announcement.get("id"))
+                .and_then(serde_json::Value::as_str),
             Some("keymap-v2")
         );
         assert_eq!(
             manifest.download_url_for("linux", "x86_64").as_deref(),
             Some("https://example.com/herdr-linux-x86_64")
+        );
+    }
+
+    #[test]
+    fn update_manifest_reads_archived_release_metadata() {
+        let json = r####"{
+            "version": "0.3.0",
+            "protocol": 4,
+            "notes": "### Changed\n- Three",
+            "assets": {
+                "linux_x86_64": "https://example.com/unused"
+            },
+            "releases": {
+                "0.2.0": {
+                    "notes": "### Changed\n- Two",
+                    "announcement": {
+                        "id": "two",
+                        "title": "Two",
+                        "body": "### Two"
+                    }
+                }
+            }
+        }"####;
+        let manifest: UpdateManifest = serde_json::from_str(json).unwrap();
+        let version = Version::parse("0.2.0").unwrap();
+        let metadata = manifest.metadata_for_version(&version).expect("metadata");
+
+        assert_eq!(metadata.notes_body(), "### Changed\n- Two");
+        assert_eq!(
+            metadata
+                .announcement
+                .as_ref()
+                .and_then(|announcement| announcement.get("id"))
+                .and_then(serde_json::Value::as_str),
+            Some("two")
+        );
+    }
+
+    #[test]
+    fn update_manifest_root_metadata_wins_for_latest_version() {
+        let json = r####"{
+            "version": "0.3.0",
+            "protocol": 4,
+            "notes": "### Changed\n- Root",
+            "announcement": {
+                "id": "root",
+                "title": "Root",
+                "body": "### Root"
+            },
+            "assets": {
+                "linux_x86_64": "https://example.com/unused"
+            },
+            "releases": {
+                "0.3.0": {
+                    "notes": "### Changed\n- Stale",
+                    "announcement": {
+                        "id": "stale",
+                        "title": "Stale",
+                        "body": "### Stale"
+                    }
+                }
+            }
+        }"####;
+        let manifest: UpdateManifest = serde_json::from_str(json).unwrap();
+        let version = Version::parse("0.3.0").unwrap();
+        let metadata = manifest.metadata_for_version(&version).expect("metadata");
+
+        assert_eq!(metadata.notes_body(), "### Changed\n- Root");
+        assert_eq!(
+            metadata
+                .announcement
+                .as_ref()
+                .and_then(|announcement| announcement.get("id"))
+                .and_then(serde_json::Value::as_str),
+            Some("root")
+        );
+    }
+
+    #[test]
+    fn update_manifest_ignores_malformed_releases_container() {
+        let json = r####"{
+            "version": "0.3.0",
+            "protocol": 4,
+            "notes": "### Changed\n- Root",
+            "assets": {
+                "linux_x86_64": "https://example.com/unused"
+            },
+            "releases": []
+        }"####;
+        let manifest: UpdateManifest = serde_json::from_str(json).unwrap();
+
+        assert!(manifest.releases.is_empty());
+        assert_eq!(
+            manifest
+                .metadata_for_version(&Version::parse("0.3.0").unwrap())
+                .expect("metadata")
+                .notes_body(),
+            "### Changed\n- Root"
         );
     }
 
@@ -1552,16 +1720,51 @@ mod tests {
     }
 
     #[test]
+    fn invalid_manifest_announcement_does_not_block_release_info() {
+        let (os, arch) = platform_target();
+        let asset_key = format!("{os}-{arch}");
+        let json = format!(
+            r####"{{
+                "version": "99.99.99",
+                "protocol": 4,
+                "notes": "### Changed\n- One",
+                "announcement": {{
+                    "id": 123,
+                    "title": "Keymap changes",
+                    "body": "### Heads up\n- Defaults changed"
+                }},
+                "assets": {{
+                    "{asset_key}": "https://example.com/herdr"
+                }}
+            }}"####
+        );
+
+        let manifest: UpdateManifest = serde_json::from_str(&json).unwrap();
+        handle_manifest_announcement(&manifest.version, manifest.announcement.as_ref());
+        let release = release_info_from_manifest(&manifest)
+            .unwrap()
+            .expect("release info");
+
+        assert_eq!(release.version, Version::parse("99.99.99").unwrap());
+        assert_eq!(release.download_url, "https://example.com/herdr");
+    }
+
+    #[test]
     fn checked_in_website_manifest_matches_update_schema() {
         let manifest: UpdateManifest = serde_json::from_str(include_str!("../website/latest.json"))
             .expect("website/latest.json should match updater schema");
 
-        assert!(!manifest.notes_body().is_empty());
+        assert!(!manifest
+            .metadata_for_version(&Version::parse(&manifest.version).unwrap())
+            .expect("metadata")
+            .notes_body()
+            .is_empty());
         // website/latest.json describes the latest released binaries, not the
         // current unreleased checkout. Its protocol is updated by the release
         // flow together with the release assets.
         assert!(manifest.protocol.is_some());
         assert_eq!(manifest.assets.len(), 4);
+        assert!(manifest.releases.contains_key(&manifest.version));
 
         for target in [
             "linux-x86_64",

@@ -3,14 +3,37 @@
 ## Unreleased
 
 ### Added
+- Added `experimental.reveal_hidden_cursor_for_cjk_ime = false` (opt-in), `experimental.cjk_ime_agents = []` (optional allow-list), and `experimental.cjk_ime_cursor_shape = "steady_block"` to expose the focused pane's cursor anchor to the outer terminal even when the pane requested `?25l`, restoring macOS IME candidate-window tracking for TUIs that paint their own cursor (Claude Code, pi, codex). When `cjk_ime_agents` is non-empty, the reveal applies only to focused panes whose detected agent matches one of the listed names. When the pane reports no cursor position, the anchor falls back to the pane's top-left so a stable IME hint is always available. Trade-off when enabled: an extra hardware cursor may appear in the outer terminal for apps that hide the cursor without painting a replacement. (#149, thanks @ChihGodlee)
+
+### Fixed
+- Antigravity CLI (`agy`) sessions are now detected, and their terminal UI now reports working and blocked states in the Agents panel. (#207)
+- Cursor Agent sessions launched as `cursor-agent` are now detected, and their terminal UI now reports working and blocked states in the Agents panel. (#225)
+- `herdr --remote` now offers to restart the remote server after installing or replacing a remote binary, or when the running server version differs, even if the client/server protocol is still compatible.
+
+## [0.6.0] - 2026-05-20
+
+### Added
+- Added keybinding v2 with explicit `prefix+...` syntax, array bindings per action, configurable prefix-mode pane focus, tab switching, and direct modified chords for users who opt in. (#154, #201, #202, #219)
+- Added `herdr config reset-keys` to back up `config.toml` and remove custom keybindings so built-in v2 defaults apply on restart or config reload. (#154)
 - Added an integrations tab in settings and first-run onboarding so users can install recommended agent integrations from inside Herdr.
+- Added update badges on the sidebar menu, settings menu item, and integrations settings tab when installed integrations are outdated.
 - Added `terminal.default_shell` to choose the executable used for new interactive panes. When unset, Herdr still falls back to `$SHELL`, then `/bin/sh`. (#196)
 - Added native Kiro CLI detection with idle and working state heuristics. (#185)
 
 ### Fixed
+- Keybinding conflict warnings now stay visible and show one readable yellow row per conflicting binding.
+- Update prompts that need to stop a running server now default Enter to yes and show `[Y/n]`.
+- Pending release notes no longer open automatically on startup; the latest notes remain available from the menu.
+- Running `herdr server` directly now prints socket and log paths and explains that normal TUI users should run `herdr`.
+- Kitty graphics virtual Unicode placeholders now render image placements instead of leaving placeholder cells behind. (#136)
+- Clipboard image reads are now capped to Herdr's image payload limit, preventing oversized local clipboard images from being read into memory.
+- The install script now reads Herdr's public latest-release manifest, so fresh installs use the same binary URLs as `herdr update`.
+- The Claude Code integration no longer lets subagent completion hooks report durable `working`, preventing delayed recap or subagent completion events from reviving an idle pane. (#198)
 - Remote clients now bridge local clipboard images into the remote pane by staging them as temporary image files and pasting the remote path, so Claude Code image paste works over `herdr --remote`. (#205)
 
 ### Breaking Changes
+- Removed the separate `keys.quit` binding. Use `keys.detach`, which detaches in server mode and exits in `--no-session` mode. The default detach binding is now `prefix+q`.
+- Keybindings now use explicit trigger syntax: `prefix+c` means prefix mode, while `ctrl+alt+c` is direct. Bare printable direct bindings such as `new_tab = "c"` are rejected with diagnostics because they intercept normal typing. The default keymap now gives tmux-style tab actions to `prefix+c`, `prefix+n`/`prefix+p`, and `prefix+1..9`, uses `prefix+w` for workspace navigation, and moves pane focus to `prefix+h/j/k/l`. (#154)
 - The client/server protocol is now version 8. Stop and restart any running v0.5.12 server before attaching with this release.
 
 ## [0.5.12] - 2026-05-19

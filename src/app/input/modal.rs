@@ -2,7 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 
 use crate::{
-    app::state::{key_matches, AppState, ContextMenuKind, ContextMenuState, MenuListState, Mode},
+    app::state::{AppState, ContextMenuKind, ContextMenuState, MenuListState, Mode},
+    input::TerminalKey,
     layout::NavDirection,
 };
 
@@ -66,7 +67,7 @@ pub(super) fn modal_action_from_buttons<A: Copy>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlobalMenuAction {
-    Quit,
+    Detach,
     WhatsNew,
     Keybinds,
     ReloadConfig,
@@ -82,7 +83,7 @@ pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
     if state.update_available.is_some() || state.latest_release_notes_available {
         actions.push(GlobalMenuAction::WhatsNew);
     }
-    actions.push(GlobalMenuAction::Quit);
+    actions.push(GlobalMenuAction::Detach);
     actions
 }
 
@@ -110,19 +111,19 @@ fn open_update_release_notes(state: &mut AppState) {
     state.mode = Mode::ReleaseNotes;
 }
 
-pub(super) fn request_quit_or_detach(state: &mut AppState) {
-    if state.quit_detaches {
-        state.detach_requested = true;
-    } else {
+pub(super) fn request_detach(state: &mut AppState) {
+    if state.detach_exits {
         state.should_quit = true;
+    } else {
+        state.detach_requested = true;
     }
 }
 
 pub(super) fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuAction) {
     match action {
-        GlobalMenuAction::Quit => {
+        GlobalMenuAction::Detach => {
             leave_modal(state);
-            request_quit_or_detach(state);
+            request_detach(state);
         }
         GlobalMenuAction::WhatsNew => open_update_release_notes(state),
         GlobalMenuAction::Keybinds => open_keybind_help(state),
@@ -477,14 +478,12 @@ pub(crate) fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-pub(crate) fn handle_resize_key(state: &mut AppState, key: KeyEvent) {
+pub(crate) fn handle_resize_key(state: &mut AppState, raw_key: TerminalKey) {
+    let key = raw_key.as_key_event();
     if key.code == KeyCode::Esc
         || key.code == KeyCode::Enter
-        || key_matches(
-            &key,
-            state.keybinds.resize_mode.0,
-            state.keybinds.resize_mode.1,
-        )
+        || state.keybinds.resize_mode.matches_prefix_key(raw_key)
+        || state.keybinds.resize_mode.matches_direct_key(raw_key)
     {
         if state.active.is_some() {
             state.mode = Mode::Terminal;
@@ -677,15 +676,68 @@ mod tests {
     fn custom_resize_key_exits_resize_mode() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::Resize;
-        state.keybinds.resize_mode = (KeyCode::Char('g'), KeyModifiers::empty());
-        state.keybinds.resize_mode_label = "g".into();
+        state.keybinds.resize_mode = crate::config::ActionKeybinds::prefix("g");
 
         handle_resize_key(
             &mut state,
-            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
+            TerminalKey::new(KeyCode::Char('g'), KeyModifiers::empty()),
         );
 
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn direct_resize_key_exits_resize_mode() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.mode = Mode::Resize;
+        state.keybinds.resize_mode = crate::config::ActionKeybinds::direct("ctrl+alt+r");
+
+        handle_resize_key(
+            &mut state,
+            TerminalKey::new(
+                KeyCode::Char('r'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+        );
+
+        assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn resize_key_exit_matches_enhanced_shifted_punctuation() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.mode = Mode::Resize;
+        state.keybinds.resize_mode = crate::config::ActionKeybinds::prefix("?");
+
+        handle_resize_key(
+            &mut state,
+            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
+                .with_shifted_codepoint('?' as u32),
+        );
+
+        assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn detach_requests_client_detach_in_persistence_mode() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.detach_exits = false;
+
+        request_detach(&mut state);
+
+        assert!(state.detach_requested);
+        assert!(!state.should_quit);
+    }
+
+    #[test]
+    fn detach_exits_in_no_session_mode() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.detach_exits = true;
+
+        request_detach(&mut state);
+
+        assert!(state.should_quit);
+        assert!(!state.detach_requested);
     }
 
     #[test]
