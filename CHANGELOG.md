@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.5.12-cmux7] - 2026-05-21
+
+### Added
+- TUI mutations now emit `WorkspaceCreated`, `TabCreated`, and `TabClosed` events alongside the existing rename / reorder / layout events. cmux's sidebar refreshes on each so the workspace list matches daemon state without waiting for the 30s poll.
+
 ## [0.5.12-cmux6] - 2026-05-21
 
 ### Fixed

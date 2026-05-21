@@ -104,7 +104,24 @@ impl App {
         let root_pane = self.state.workspaces[ws_idx].tabs[idx].root_pane.raw();
         crate::logging::tab_created(&workspace_id, &tab_id, root_pane);
         self.schedule_session_save();
+        // Mirror api.rs `tab.create`: broadcast TabCreated so cmux
+        // sees the new tab in its sidebar without polling.
+        let tab_info = self.tab_info(ws_idx, idx);
+        if let Some(tab) = tab_info {
+            self.state.pending_events.push(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::TabCreated,
+                data: crate::api::schema::EventData::TabCreated { tab },
+            });
+        }
         Ok(idx)
+    }
+
+    fn emit_workspace_created(&mut self, ws_idx: usize) {
+        let info = self.workspace_info(ws_idx);
+        self.state.pending_events.push(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::WorkspaceCreated,
+            data: crate::api::schema::EventData::WorkspaceCreated { workspace: info },
+        });
     }
 
     pub(super) fn create_workspace_with_options(
@@ -133,6 +150,9 @@ impl App {
         let workspace_id = self.state.workspaces[idx].id.clone();
         let root_pane = self.state.workspaces[idx].tabs[0].root_pane.raw();
         crate::logging::workspace_created(&workspace_id, root_pane);
+        // Mirror api.rs `workspace.create`: broadcast WorkspaceCreated
+        // so cmux's sidebar list picks up the new entry without polling.
+        self.emit_workspace_created(idx);
         if focus || self.state.active.is_none() {
             self.state.switch_workspace(idx);
             self.state.mode = Mode::Terminal;

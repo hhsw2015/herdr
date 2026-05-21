@@ -763,6 +763,16 @@ impl AppState {
             crate::logging::tab_closed(&workspace_id, &closing_tab_id);
             self.tab_scroll_follow_active = true;
             self.refresh_tab_bar_view();
+            // Mirror api.rs `tab.close` so cmux invalidates its sidebar
+            // and the active tab strip drops the closed entry without
+            // waiting on the next 30s poll.
+            self.pending_events.push(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::TabClosed,
+                data: crate::api::schema::EventData::TabClosed {
+                    tab_id: closing_tab_id,
+                    workspace_id: self.public_workspace_id(ws_idx),
+                },
+            });
         }
     }
 }
