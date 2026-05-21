@@ -437,7 +437,13 @@ pub enum Subscription {
     },
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged {
-        pane_id: String,
+        // Optional so subscribers can request a global stream (every
+        // pane on the daemon) rather than a per-pane filter. cmux's
+        // sidebar subscribes globally to drive its blocked-count
+        // badge; requiring pane_id here meant the whole subscribe
+        // request failed and tore down the long-lived events stream.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_status: Option<AgentStatus>,
     },

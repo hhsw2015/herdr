@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.5.12-cmux6] - 2026-05-21
+
+### Fixed
+- `Subscription::PaneAgentStatusChanged` required a `pane_id` field, but cmux's sidebar subscribes globally (no pane filter) to drive the blocked-count badge. Daemon rejected the entire `events.subscribe` request with `missing field 'pane_id'`, force-closed the connection, and cmux's pump looped on EOF forever. Make `pane_id` optional and treat the field-less form as a broadcast subscription that forwards every `pane.agent_status_changed` event verbatim.
+
 ## [0.5.12-cmux5] - 2026-05-21
 
 ### Fixed

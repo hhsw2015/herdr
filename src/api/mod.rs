@@ -864,6 +864,17 @@ impl ActiveSubscription {
                 pane_id,
                 agent_status,
             } => {
+                // Global subscription (no pane_id filter): forward
+                // every pane.agent_status_changed event from the hub.
+                // Used by cmux's sidebar to drive the blocked-count
+                // badge without requiring a specific pane to bootstrap.
+                let Some(pane_id) = pane_id else {
+                    return Ok(Self::Event(ActiveEventSubscription {
+                        event_kind:
+                            crate::api::schema::EventKind::PaneAgentStatusChanged,
+                        last_sequence: 0,
+                    }));
+                };
                 let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pane_id, api_tx)?;
 
                 Ok(Self::AgentStatusChanged(
