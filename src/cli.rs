@@ -1015,11 +1015,11 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
     let subscriptions = if agent_status == AgentStatus::Idle {
         vec![
             Subscription::PaneAgentStatusChanged {
-                pane_id: pane_id.to_owned(),
+                pane_id: Some(pane_id.to_owned()),
                 agent_status: Some(AgentStatus::Idle),
             },
             Subscription::PaneAgentStatusChanged {
-                pane_id: pane_id.to_owned(),
+                pane_id: Some(pane_id.to_owned()),
                 agent_status: Some(AgentStatus::Done),
             },
         ]
@@ -1928,7 +1928,7 @@ fn wait_agent_status(args: &[String]) -> std::io::Result<i32> {
             id: "cli:wait:agent-status".into(),
             method: Method::EventsSubscribe(crate::api::schema::EventsSubscribeParams {
                 subscriptions: vec![Subscription::PaneAgentStatusChanged {
-                    pane_id,
+                    pane_id: Some(pane_id),
                     agent_status: Some(agent_status),
                 }],
             }),
