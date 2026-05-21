@@ -295,6 +295,13 @@ impl PaneRuntime {
     ) -> std::io::Result<Self> {
         let shell = pane_shell(default_shell);
         let mut cmd = CommandBuilder::new(&shell);
+        // Run the shell as a login shell so it picks up `.zprofile` /
+        // `.bash_profile` / `.profile` — that's where users source
+        // `brew shellenv`, init managers like nvm/asdf/pyenv, etc.
+        // Without `-l` the daemon-inherited PATH leaks straight into
+        // the user's interactive prompt and `.zshrc` line 1 fails on
+        // `brew --prefix` (no /opt/homebrew/bin in PATH).
+        cmd.arg("-l");
         cmd.cwd(cwd);
         cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
         apply_pane_terminal_env(&mut cmd);

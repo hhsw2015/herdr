@@ -768,6 +768,10 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceFocused,
                 last_sequence: 0,
             })),
+            Subscription::WorkspaceRenamed {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorkspaceRenamed,
+                last_sequence: 0,
+            })),
             Subscription::TabCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabCreated,
                 last_sequence: 0,

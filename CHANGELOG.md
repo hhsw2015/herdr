@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [0.5.12-cmux5] - 2026-05-21
+
+### Fixed
+- `events.subscribe` rejected `workspace.renamed` as an unknown variant; cmux's pump subscribed to it among others, so every connection landed in invalid_request and was force-closed before any event flowed. Add the missing `WorkspaceRenamed` variant to `Subscription` and wire it through `ActiveSubscription`. With cmux5 the long-lived events stream actually stays open and TUI mutations propagate to cmux in real time.
+- Pane shells now spawn as login shells (`-l`) so `.zprofile` runs and Homebrew / nvm / asdf init scripts populate `PATH` before `.zshrc`. cmux launches the daemon from a launchd-derived environment that lacks `/opt/homebrew/bin`; without `-l`, every herdr panel emitted `brew: command not found` on start.
+
 ## [0.5.12-cmux4] - 2026-05-20
 
 ### Fixed

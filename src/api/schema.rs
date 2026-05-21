@@ -405,6 +405,8 @@ pub enum Subscription {
     WorkspaceClosed {},
     #[serde(rename = "workspace.focused")]
     WorkspaceFocused {},
+    #[serde(rename = "workspace.renamed")]
+    WorkspaceRenamed {},
     #[serde(rename = "tab.created")]
     TabCreated {},
     #[serde(rename = "tab.closed")]
