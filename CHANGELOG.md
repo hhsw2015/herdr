@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.0-cmux4] - 2026-05-21
+
+### Fixed
+- raw-pty-attach replay race: the per-pane history ring was appended under a Mutex but the broadcast send happened after the lock dropped, so a subscribe call landing between append and send could observe the byte in both the snapshot and the live receiver — duplicate first frame on cmux reattach. Hold the lock for the combined append + send so subscribers see exactly one delivery per byte.
+
 ## [0.6.0-cmux3] - 2026-05-21
 
 ### Added

@@ -574,10 +574,25 @@ impl PaneRuntime {
                             // subscribe_raw_pty_with_replay reads, so a new
                             // attaching client sees a contiguous prefix.
                             let chunk = Bytes::copy_from_slice(&buf[..n]);
+                            // Hold the history lock for BOTH append
+                            // and broadcast send so a concurrent
+                            // subscribe_raw_pty_with_replay can't
+                            // observe the byte in the snapshot AND
+                            // the receiver. Without atomicity:
+                            // append → (subscribe sees byte in
+                            // history + new receiver) → send → byte
+                            // delivered to receiver too = duplicate
+                            // first frame on cmux reattach.
                             if let Ok(mut hist) = raw_pty_history_reader.lock() {
                                 hist.append(&chunk);
+                                let _ = raw_pty_tx_reader.send(chunk);
+                            } else {
+                                // Mutex poisoned — fall back to plain
+                                // broadcast so live forwarding keeps
+                                // working at the cost of a possibly
+                                // stale replay snapshot.
+                                let _ = raw_pty_tx_reader.send(chunk);
                             }
-                            let _ = raw_pty_tx_reader.send(chunk);
 
                             let shell_pid = child_pid.load(Ordering::Acquire);
                             let result = terminal.process_pty_bytes(
