@@ -373,8 +373,7 @@ impl AppState {
         // Mirror move_tab's TabReordered emit: TUI drag of workspace order
         // mutates persistent state; broadcast WorkspaceReordered so cmux
         // and other clients reorder their sidebar to match.
-        let workspace_ids: Vec<String> =
-            self.workspaces.iter().map(|ws| ws.id.clone()).collect();
+        let workspace_ids: Vec<String> = self.workspaces.iter().map(|ws| ws.id.clone()).collect();
         self.pending_events.push(crate::api::schema::EventEnvelope {
             event: crate::api::schema::EventKind::WorkspaceReordered,
             data: crate::api::schema::EventData::WorkspaceReordered { workspace_ids },
@@ -623,9 +622,7 @@ impl AppState {
                 // their bindings before we drop terminal state.
                 self.pending_events.push(crate::api::schema::EventEnvelope {
                     event: crate::api::schema::EventKind::WorkspaceClosed,
-                    data: crate::api::schema::EventData::WorkspaceClosed {
-                        workspace_id,
-                    },
+                    data: crate::api::schema::EventData::WorkspaceClosed { workspace_id },
                 });
             }
         }
@@ -784,10 +781,14 @@ impl AppState {
 
     pub fn toggle_zoom(&mut self) {
         let Some(ws_idx) = self.active else { return };
-        let Some(ws) = self.workspaces.get_mut(ws_idx) else { return };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return;
+        };
         let workspace_id = ws.id.clone();
         let tab_idx = ws.active_tab_index();
-        let Some(tab) = ws.active_tab_mut() else { return };
+        let Some(tab) = ws.active_tab_mut() else {
+            return;
+        };
         if tab.layout.pane_count() <= 1 {
             return;
         }

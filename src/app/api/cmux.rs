@@ -12,8 +12,8 @@ use crate::api::schema::{
 };
 
 use super::responses::{encode_error, encode_success};
-use crate::app::App;
 use crate::app::state::Mode;
+use crate::app::App;
 
 fn pane_not_found(id: String, pane_id: &str) -> String {
     encode_error(id, "pane_not_found", format!("pane {pane_id} not found"))
@@ -213,11 +213,7 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_set_zoom(
-        &mut self,
-        id: String,
-        params: PaneSetZoomParams,
-    ) -> String {
+    pub(super) fn handle_pane_set_zoom(&mut self, id: String, params: PaneSetZoomParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -303,8 +299,7 @@ impl App {
             .map(|t| t.root_pane);
         let ws = &mut self.state.workspaces[ws_idx];
         let mut reordered: Vec<crate::workspace::Tab> = Vec::with_capacity(ws.tabs.len());
-        let mut taken: Vec<Option<crate::workspace::Tab>> =
-            ws.tabs.drain(..).map(Some).collect();
+        let mut taken: Vec<Option<crate::workspace::Tab>> = ws.tabs.drain(..).map(Some).collect();
         for idx in &permutation {
             if let Some(tab) = taken[*idx].take() {
                 reordered.push(tab);

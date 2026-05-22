@@ -106,20 +106,24 @@ impl App {
         // sees the new tab in its sidebar without polling.
         let tab_info = self.tab_info(ws_idx, idx);
         if let Some(tab) = tab_info {
-            self.state.pending_events.push(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::TabCreated,
-                data: crate::api::schema::EventData::TabCreated { tab },
-            });
+            self.state
+                .pending_events
+                .push(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::TabCreated,
+                    data: crate::api::schema::EventData::TabCreated { tab },
+                });
         }
         Ok(idx)
     }
 
     fn emit_workspace_created(&mut self, ws_idx: usize) {
         let info = self.workspace_info(ws_idx);
-        self.state.pending_events.push(crate::api::schema::EventEnvelope {
-            event: crate::api::schema::EventKind::WorkspaceCreated,
-            data: crate::api::schema::EventData::WorkspaceCreated { workspace: info },
-        });
+        self.state
+            .pending_events
+            .push(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::WorkspaceCreated,
+                data: crate::api::schema::EventData::WorkspaceCreated { workspace: info },
+            });
     }
 
     pub(crate) fn create_workspace_with_options(

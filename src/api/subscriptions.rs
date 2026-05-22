@@ -198,11 +198,7 @@ impl ActiveSubscription {
                 // probe. cmux uses this to monitor agent status across
                 // all panes without enumerating up front.
                 let last_status = if let Some(ref pid) = pane_id {
-                    let probe = pane_get(
-                        format!("{request_id}:sub:{index}:probe"),
-                        pid,
-                        api_tx,
-                    )?;
+                    let probe = pane_get(format!("{request_id}:sub:{index}:probe"), pid, api_tx)?;
                     Some(probe.agent_status)
                 } else {
                     None
@@ -289,12 +285,7 @@ impl ActiveAgentStatusChangedSubscription {
     fn poll(&mut self, api_tx: &ApiRequestSender) -> Option<SubscriptionEventEnvelope> {
         // Global subscription: live-only, no per-pane polling.
         let pane_id = self.pane_id.as_ref()?;
-        let pane = pane_get(
-            format!("{}:pane", self.request_prefix),
-            pane_id,
-            api_tx,
-        )
-        .ok()?;
+        let pane = pane_get(format!("{}:pane", self.request_prefix), pane_id, api_tx).ok()?;
         let current_status = pane.agent_status;
         let previous_status = self.last_status.replace(current_status);
         if previous_status.is_none() || previous_status == Some(current_status) {

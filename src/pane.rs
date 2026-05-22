@@ -484,9 +484,7 @@ impl PaneRuntime {
         // the internal emulator). Capacity 256 chunks; slow consumers see
         // RecvError::Lagged and resync from the next available chunk.
         let (raw_pty_tx, _) = broadcast::channel::<Bytes>(256);
-        let raw_pty_history = Arc::new(Mutex::new(RawPtyHistory::new(
-            RAW_PTY_HISTORY_DEFAULT_CAP,
-        )));
+        let raw_pty_history = Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP)));
 
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
@@ -904,9 +902,7 @@ impl PaneRuntime {
     /// deliveries. Used by `raw-pty-attach` to give cmux reattach
     /// tmux-like behavior — the user sees the existing terminal state
     /// instead of a blank pane.
-    pub fn subscribe_raw_pty_with_replay(
-        &self,
-    ) -> (Bytes, broadcast::Receiver<Bytes>) {
+    pub fn subscribe_raw_pty_with_replay(&self) -> (Bytes, broadcast::Receiver<Bytes>) {
         let guard = self
             .raw_pty_history
             .lock()
@@ -1215,7 +1211,9 @@ impl PaneRuntime {
                 detect_reset_notify: Arc::new(Notify::new()),
                 pending_release: Arc::new(Mutex::new(None)),
                 raw_pty_tx: broadcast::channel::<Bytes>(16).0,
-                raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
+                raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(
+                    RAW_PTY_HISTORY_DEFAULT_CAP,
+                ))),
                 detect_handle: tokio::spawn(async {}).abort_handle(),
             },
             rx,
@@ -1322,7 +1320,7 @@ mod tests {
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
             raw_pty_tx: broadcast::channel::<Bytes>(16).0,
-                raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
+            raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 
@@ -1348,7 +1346,7 @@ mod tests {
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
             raw_pty_tx: broadcast::channel::<Bytes>(16).0,
-                raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
+            raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 
