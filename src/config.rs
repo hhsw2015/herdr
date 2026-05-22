@@ -19,7 +19,7 @@ pub use self::{
     },
     model::{
         validated_sidebar_bounds, AgentPanelScopeConfig, Config, ConfigReloadReport,
-        ConfigReloadStatus, ToastConfig, ToastDelivery,
+        ConfigReloadStatus, KeysConfig, ToastConfig, ToastDelivery,
     },
     sound::SoundConfig,
     theme::{parse_color, CustomThemeColors, ThemeConfig},
@@ -29,6 +29,7 @@ pub(crate) use self::io::upsert_top_level_bool;
 
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
+pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 
 #[cfg(test)]
 pub(crate) fn app_dir_name() -> &'static str {
@@ -66,5 +67,47 @@ impl Config {
         } else {
             Err(diagnostics)
         }
+    }
+
+    pub(crate) fn local_keybindings_profile_toml(&self) -> Result<String, toml::ser::Error> {
+        let mut keys = self.keys.clone();
+        keys.command.clear();
+
+        #[derive(serde::Serialize)]
+        struct KeysProfile {
+            keys: KeysConfig,
+        }
+
+        toml::to_string_pretty(&KeysProfile { keys })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_keybindings_profile_includes_defaults_and_excludes_commands() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "ctrl+a"
+new_tab = "prefix+t"
+
+[[keys.command]]
+key = "prefix+g"
+command = "lazygit"
+"#,
+        )
+        .unwrap();
+
+        let profile = config.local_keybindings_profile_toml().unwrap();
+        assert!(profile.contains("[keys]"));
+        assert!(profile.contains("prefix = \"ctrl+a\""));
+        assert!(profile.contains("new_tab = \"prefix+t\""));
+        assert!(profile.contains("next_tab = \"prefix+n\""));
+        assert!(!profile.contains("lazygit"));
+        assert!(!profile.contains("command ="));
+        assert!(!profile.contains("[[keys.command]]"));
     }
 }

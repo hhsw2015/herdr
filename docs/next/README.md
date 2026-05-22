@@ -90,7 +90,7 @@ ssh you@yourserver
 herdr
 ```
 
-or attach from your local terminal through ssh without opening a shell first. your local herdr acts as a thin client, connects over ssh, starts or attaches to the remote herdr server, and streams the ui back to your terminal.
+or attach from your local terminal through ssh without opening a shell first. your local herdr acts as a thin client, connects over ssh, starts or attaches to the remote herdr server, and streams the ui back to your terminal. remote attach uses your local keybindings by default; pass `--remote-keybindings server` to use the remote server config instead.
 
 ```bash
 herdr --remote workbox
@@ -212,6 +212,7 @@ press `ctrl+b` to enter prefix mode. default actions are prefix-first and tmux-l
 | `prefix+1..9` | switch tab |
 | `prefix+w` | workspace navigation |
 | `prefix+shift+n` | new workspace |
+| `prefix+shift+g` | new worktree |
 | `prefix+shift+w` | rename workspace |
 | `prefix+shift+d` | close workspace |
 | `prefix+h/j/k/l` | focus pane |

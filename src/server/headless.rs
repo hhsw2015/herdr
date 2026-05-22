@@ -32,16 +32,28 @@ use bytes::Bytes;
 
 use crate::api;
 use crate::app;
-use crate::app::state::AppState;
 use crate::config;
-use crate::detect::AgentState;
 use crate::events::AppEvent;
-use crate::layout::PaneId;
-use crate::server::client_transport::{self, ClientWriter, ServerEvent};
-use crate::server::protocol::{
-    self, FrameData, RenderEncoding, ServerMessage, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE,
+use crate::protocol::{self, FrameData, ServerMessage, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE};
+use crate::server::client_accept::accept_pending_client_connections;
+use crate::server::client_transport::ServerEvent;
+use crate::server::clients::{
+    events_include_interaction, latest_app_client, render_targets, terminal_attach_client_ids,
+    ClientConnection, ClientConnectionMode,
 };
-use crate::server::render_stream::ClientRenderState;
+use crate::server::keybindings::{app_keybindings, apply_keybindings};
+use crate::server::notifications::{
+    should_forward_toast_to_clients, toast_message_from_state_change, toast_notify_kind,
+};
+use crate::server::socket_paths::{
+    client_socket_path, prepare_socket_path, restrict_socket_permissions,
+};
+use crate::server::terminal_attach::paste_payload_for_runtime;
+
+#[cfg(test)]
+use crate::protocol::RenderEncoding;
+#[cfg(test)]
+use crate::server::client_transport::ClientWriter;
 
 // ---------------------------------------------------------------------------
 // Loop event enum for the headless server event loop
@@ -64,28 +76,6 @@ enum LoopEvent {
 const MIN_COLS: u16 = 80;
 const MIN_ROWS: u16 = 24;
 
-fn paste_payload_for_runtime(runtime: &crate::terminal::TerminalRuntime, text: &str) -> String {
-    if runtime
-        .input_state()
-        .map(|state| state.bracketed_paste)
-        .unwrap_or(false)
-    {
-        format!("\x1b[200~{text}\x1b[201~")
-    } else {
-        text.to_owned()
-    }
-}
-
-/// Legacy environment variable for overriding the client socket path.
-///
-/// Contractual override behavior for auto-detect uses `HERDR_SOCKET_PATH`.
-/// This variable is kept as a fallback for callers that explicitly need a
-/// client-only override when `HERDR_SOCKET_PATH` is not set.
-pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "HERDR_CLIENT_SOCKET_PATH";
-
-/// Socket permission mode (owner read/write only).
-const SOCKET_PERMISSION_MODE: u32 = 0o600;
-
 /// Timeout for in-flight API requests during shutdown.
 #[allow(dead_code)]
 const SHUTDOWN_API_TIMEOUT: Duration = Duration::from_secs(5);
@@ -99,245 +89,6 @@ const SHUTDOWN_API_TIMEOUT: Duration = Duration::from_secs(5);
 /// avoid reintroducing the idle CPU spin.
 const CLIENT_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-fn should_forward_toast_to_clients(delivery: config::ToastDelivery) -> bool {
-    toast_notify_kind(delivery).is_some()
-}
-
-fn toast_notify_kind(delivery: config::ToastDelivery) -> Option<protocol::NotifyKind> {
-    match delivery {
-        config::ToastDelivery::Terminal => Some(protocol::NotifyKind::Toast),
-        config::ToastDelivery::System => Some(protocol::NotifyKind::SystemToast),
-        config::ToastDelivery::Off | config::ToastDelivery::Herdr => None,
-    }
-}
-
-fn toast_event_text(kind: app::state::ToastKind) -> &'static str {
-    match kind {
-        app::state::ToastKind::NeedsAttention => "needs attention",
-        app::state::ToastKind::Finished => "finished",
-        app::state::ToastKind::UpdateInstalled => "updated",
-    }
-}
-
-fn toast_message_from_state_change(
-    state: &AppState,
-    pane_id: PaneId,
-    suppress_active_tab_notifications: bool,
-    prev_state: AgentState,
-    new_state: AgentState,
-) -> Option<String> {
-    let kind = app::actions::notification_toast_for_state_change(
-        suppress_active_tab_notifications,
-        prev_state,
-        new_state,
-    )?;
-
-    state
-        .workspaces
-        .iter()
-        .enumerate()
-        .find_map(|(ws_idx, ws)| {
-            ws.tabs.iter().find_map(|tab| {
-                let pane = tab.panes.get(&pane_id)?;
-                let agent_label = state
-                    .terminals
-                    .get(&pane.attached_terminal_id)
-                    .and_then(|terminal| terminal.effective_agent_label())?;
-                Some(format!(
-                    "{} {}: {}",
-                    agent_label,
-                    toast_event_text(kind),
-                    app::actions::notification_context(ws, ws_idx, pane_id)
-                ))
-            })
-        })
-}
-
-// ---------------------------------------------------------------------------
-// Socket path helpers
-// ---------------------------------------------------------------------------
-
-/// Returns the path for the client protocol socket.
-///
-/// Contract-aligned override behavior:
-/// 1. If CLI `--session <name>` is active, use that session's client socket.
-/// 2. If `HERDR_SOCKET_PATH` is set, derive the client socket path from it by
-///    inserting `-client` before `.sock` (e.g. `herdr.sock` -> `herdr-client.sock`).
-///    This keeps JSON API and client socket overrides consistent.
-/// 3. Otherwise, honor `HERDR_CLIENT_SOCKET_PATH` (legacy/testing fallback).
-/// 4. Otherwise, use the active session data directory.
-pub fn client_socket_path() -> PathBuf {
-    if crate::session::explicit_session_requested() {
-        return crate::session::client_socket_path_for(crate::session::active_name().as_deref());
-    }
-    client_socket_path_from_overrides(
-        std::env::var(api::SOCKET_PATH_ENV_VAR).ok().as_deref(),
-        std::env::var(CLIENT_SOCKET_PATH_ENV_VAR).ok().as_deref(),
-    )
-}
-
-fn client_socket_path_from_overrides(
-    api_socket_override: Option<&str>,
-    client_socket_override: Option<&str>,
-) -> PathBuf {
-    if let Some(api_socket_override) = api_socket_override {
-        return derive_client_socket_from_api_socket(Path::new(api_socket_override));
-    }
-
-    if let Some(client_socket_override) = client_socket_override {
-        return PathBuf::from(client_socket_override);
-    }
-
-    crate::session::client_socket_path_for(crate::session::active_name().as_deref())
-}
-
-fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> PathBuf {
-    let stem = api_socket_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("herdr");
-    let parent = api_socket_path.parent().unwrap_or_else(|| Path::new(""));
-
-    if api_socket_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext == "sock")
-    {
-        return parent.join(format!("{stem}-client.sock"));
-    }
-
-    parent.join(format!("{stem}-client.sock"))
-}
-
-// ---------------------------------------------------------------------------
-// Connected client state
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ClientConnectionMode {
-    App,
-    TerminalAttach { terminal_id: String },
-}
-
-type RenderTarget = (
-    u64,
-    (u16, u16),
-    crate::kitty_graphics::HostCellSize,
-    bool,
-    ClientConnectionMode,
-);
-
-/// A connected client tracked by the server.
-struct ClientConnection {
-    /// Whether this connection is the full app client or a direct terminal attach.
-    mode: ClientConnectionMode,
-    /// The client's terminal size (after clamping).
-    terminal_size: (u16, u16),
-    /// Pixel size of one client terminal cell.
-    cell_size: crate::kitty_graphics::HostCellSize,
-    /// Last known host terminal default colors for this client.
-    host_terminal_theme: crate::terminal_theme::TerminalTheme,
-    /// Last reported focus state for this client's outer terminal.
-    outer_terminal_focus: Option<bool>,
-    /// Monotonic activity stamp used to choose the fallback foreground client.
-    last_activity: u64,
-    /// Render baseline for the negotiated client encoding.
-    render_state: ClientRenderState,
-    /// Client-local host Kitty graphics cache.
-    graphics_cache: crate::kitty_graphics::HostGraphicsCache,
-    /// Whether the next graphics frame must clear and rebuild host-side Kitty state.
-    graphics_surface_reset_pending: bool,
-    /// Whether a render was skipped because the render channel was full.
-    render_pending: bool,
-    /// Last host mouse capture mode sent to this client.
-    host_mouse_capture_active: Option<bool>,
-    /// Temporary files staged from this client's local clipboard image pastes.
-    staged_clipboard_files: Vec<PathBuf>,
-    /// Channels for sending framed ServerMessage data to the client writer thread.
-    writer: Option<ClientWriter>,
-}
-
-impl ClientConnection {
-    #[cfg(test)]
-    fn new(
-        terminal_size: (u16, u16),
-        cell_size: crate::kitty_graphics::HostCellSize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        outer_terminal_focus: Option<bool>,
-        last_activity: u64,
-        render_encoding: RenderEncoding,
-        writer: Option<ClientWriter>,
-    ) -> Self {
-        Self::new_with_mode(
-            ClientConnectionMode::App,
-            terminal_size,
-            cell_size,
-            host_terminal_theme,
-            outer_terminal_focus,
-            last_activity,
-            render_encoding,
-            writer,
-        )
-    }
-
-    fn new_with_mode(
-        mode: ClientConnectionMode,
-        terminal_size: (u16, u16),
-        cell_size: crate::kitty_graphics::HostCellSize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        outer_terminal_focus: Option<bool>,
-        last_activity: u64,
-        render_encoding: RenderEncoding,
-        writer: Option<ClientWriter>,
-    ) -> Self {
-        Self {
-            mode,
-            terminal_size,
-            cell_size,
-            host_terminal_theme,
-            outer_terminal_focus,
-            last_activity,
-            render_state: ClientRenderState::new(render_encoding),
-            graphics_cache: crate::kitty_graphics::HostGraphicsCache::default(),
-            graphics_surface_reset_pending: false,
-            render_pending: false,
-            host_mouse_capture_active: None,
-            staged_clipboard_files: Vec::new(),
-            writer,
-        }
-    }
-
-    fn request_full_redraw(&mut self) {
-        self.render_state.reset_baseline();
-        self.graphics_surface_reset_pending = true;
-    }
-
-    fn request_semantic_redraw_after_input(&mut self) {
-        self.render_state.reset_semantic_input_baseline();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Stale socket cleanup
-// ---------------------------------------------------------------------------
-
-/// Prepares a socket path for binding: creates parent directories,
-/// removes stale socket files (where no server is listening), and
-/// returns an error if a live server is already bound.
-fn prepare_socket_path(path: &Path) -> io::Result<()> {
-    crate::ipc::prepare_socket_path(path, |path| {
-        format!(
-            "herdr server is already running (socket busy at {})",
-            path.display()
-        )
-    })
-}
-
-/// Restricts socket file permissions to owner-only (0o600).
-fn restrict_socket_permissions(path: &Path) -> io::Result<()> {
-    crate::ipc::restrict_socket_permissions(path, SOCKET_PERMISSION_MODE)
-}
-
 // ---------------------------------------------------------------------------
 // Headless server
 // ---------------------------------------------------------------------------
@@ -349,8 +100,10 @@ pub struct HeadlessServer {
     client_socket_path: PathBuf,
     clients: HashMap<u64, ClientConnection>,
     next_client_id: u64,
-    /// The client currently driving the shared pane runtime size and theme.
+    /// The client currently driving the shared pane runtime size, theme, and input keybindings.
     foreground_client_id: Option<u64>,
+    /// Server-owned keybindings, restored when foreground clients use server mode.
+    server_keybindings: crate::config::LiveKeybindConfig,
     /// Writable direct attach owner per terminal id string.
     terminal_attach_owners: HashMap<String, u64>,
     /// Monotonic activity counter used to pick the most recently active client.
@@ -390,6 +143,7 @@ impl HeadlessServer {
 
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
+        let server_keybindings = app_keybindings(&app);
 
         Ok(Self {
             app,
@@ -398,6 +152,7 @@ impl HeadlessServer {
             clients: HashMap::new(),
             next_client_id: 1,
             foreground_client_id: None,
+            server_keybindings,
             terminal_attach_owners: HashMap::new(),
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
@@ -503,9 +258,50 @@ impl HeadlessServer {
                 needs_render = true;
             }
 
+            if let Some(ws_idx) = self.app.state.request_new_linked_worktree.take() {
+                self.app.open_new_linked_worktree_dialog(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.app.state.request_open_existing_worktree.take() {
+                self.app.open_existing_worktree_dialog(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(cwd) = self.app.state.request_new_workspace_cwd.take() {
+                if let Err(err) = self.app.create_workspace_with_options(cwd, true) {
+                    error!(err = %err, "failed to create workspace at requested cwd");
+                    self.app.state.mode = app::Mode::Navigate;
+                }
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.app.state.request_remove_linked_worktree.take() {
+                self.app.open_remove_linked_worktree_confirmation(ws_idx);
+                needs_render = true;
+            }
+
+            if self.app.state.request_submit_worktree_create {
+                self.app.state.request_submit_worktree_create = false;
+                self.app.start_worktree_add();
+                needs_render = true;
+            }
+
+            if self.app.state.request_submit_worktree_open {
+                self.app.state.request_submit_worktree_open = false;
+                self.app.open_selected_existing_worktree();
+                needs_render = true;
+            }
+
+            if self.app.state.request_submit_worktree_remove {
+                self.app.state.request_submit_worktree_remove = false;
+                self.app.start_worktree_remove();
+                needs_render = true;
+            }
+
             if self.app.state.request_reload_config {
                 self.app.state.request_reload_config = false;
-                self.app.reload_config();
+                self.reload_server_config();
                 needs_render = true;
             }
 
@@ -601,9 +397,18 @@ impl HeadlessServer {
         let (cols, rows) = self.effective_size;
         let area = Rect::new(0, 0, cols, rows);
         if self.app.state.kitty_graphics_enabled && client.cell_size.is_known() {
-            crate::ui::compute_view_with_cell_size(&mut self.app.state, area, client.cell_size);
+            crate::ui::compute_view_with_cell_size(
+                &mut self.app.state,
+                &self.app.terminal_runtimes,
+                area,
+                client.cell_size,
+            );
         } else {
-            crate::ui::compute_view(&mut self.app.state, area);
+            crate::ui::compute_view_with_runtime_registry(
+                &mut self.app.state,
+                &self.app.terminal_runtimes,
+                area,
+            );
         }
 
         // Shared runtime size changes affect pane wrapping and foreground-driven
@@ -618,23 +423,42 @@ impl HeadlessServer {
         let Some(client_id) = self.foreground_client_id else {
             self.effective_size = (MIN_COLS, MIN_ROWS);
             self.app.state.outer_terminal_focus = None;
+            let server_keybindings = self.server_keybindings.clone();
+            apply_keybindings(&mut self.app, &server_keybindings);
             return;
         };
         let Some(client) = self.clients.get(&client_id) else {
             self.foreground_client_id = None;
             self.effective_size = (MIN_COLS, MIN_ROWS);
             self.app.state.outer_terminal_focus = None;
+            let server_keybindings = self.server_keybindings.clone();
+            apply_keybindings(&mut self.app, &server_keybindings);
             return;
         };
 
         self.effective_size = client.terminal_size;
         self.app.state.outer_terminal_focus = client.outer_terminal_focus;
+        let keybindings = client
+            .keybindings
+            .as_deref()
+            .unwrap_or(&self.server_keybindings)
+            .clone();
+        apply_keybindings(&mut self.app, &keybindings);
         if client.outer_terminal_focus == Some(true) {
             self.app.state.mark_active_tab_seen();
         }
         if !client.host_terminal_theme.is_empty() {
             self.app.set_host_terminal_theme(client.host_terminal_theme);
         }
+    }
+
+    fn reload_server_config(&mut self) -> crate::config::ConfigReloadReport {
+        let server_keybindings = self.server_keybindings.clone();
+        apply_keybindings(&mut self.app, &server_keybindings);
+        let report = self.app.reload_config();
+        self.server_keybindings = app_keybindings(&self.app);
+        self.sync_foreground_client_state();
+        report
     }
 
     fn foreground_client_outer_focus(&self) -> Option<bool> {
@@ -663,12 +487,7 @@ impl HeadlessServer {
     }
 
     fn promote_latest_remaining_client(&mut self) -> bool {
-        let next_foreground = self
-            .clients
-            .iter()
-            .filter(|(_, client)| matches!(client.mode, ClientConnectionMode::App))
-            .max_by_key(|(_, client)| client.last_activity)
-            .map(|(&client_id, _)| client_id);
+        let next_foreground = latest_app_client(&self.clients);
         let changed = next_foreground != self.foreground_client_id;
         self.foreground_client_id = next_foreground;
         self.sync_foreground_client_state();
@@ -734,20 +553,12 @@ impl HeadlessServer {
             return false;
         };
 
-        let mut next_theme = client.host_terminal_theme;
-        for event in events {
-            if let crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } = event {
-                next_theme = next_theme.with_color(*kind, *color);
-            }
-        }
-
-        if next_theme == client.host_terminal_theme {
+        if !client.update_host_theme_from_events(events) {
             return false;
         }
 
-        client.host_terminal_theme = next_theme;
         if self.foreground_client_id == Some(client_id) {
-            self.app.set_host_terminal_theme(next_theme)
+            self.app.set_host_terminal_theme(client.host_terminal_theme)
         } else {
             false
         }
@@ -758,77 +569,25 @@ impl HeadlessServer {
         client_id: u64,
         events: &[crate::raw_input::RawInputEvent],
     ) {
-        let next_focus = events
-            .iter()
-            .filter_map(|event| match event {
-                crate::raw_input::RawInputEvent::OuterFocusGained => Some(true),
-                crate::raw_input::RawInputEvent::OuterFocusLost => Some(false),
-                _ => None,
-            })
-            .next_back();
-
-        let Some(next_focus) = next_focus else {
-            return;
-        };
         let Some(client) = self.clients.get_mut(&client_id) else {
             return;
         };
-        client.outer_terminal_focus = Some(next_focus);
+        let Some(next_focus) = client.update_outer_focus_from_events(events) else {
+            return;
+        };
         if self.foreground_client_id == Some(client_id) {
             self.app.state.outer_terminal_focus = Some(next_focus);
         }
     }
 
-    fn events_include_interaction(events: &[crate::raw_input::RawInputEvent]) -> bool {
-        events.iter().any(|event| {
-            matches!(
-                event,
-                crate::raw_input::RawInputEvent::Key(_)
-                    | crate::raw_input::RawInputEvent::Mouse(_)
-                    | crate::raw_input::RawInputEvent::Paste(_)
-                    | crate::raw_input::RawInputEvent::OuterFocusGained
-            )
-        })
-    }
-
     /// Accepts pending client connections from the non-blocking listener.
     fn accept_client_connections(&mut self) -> io::Result<()> {
-        loop {
-            match self.client_listener.accept() {
-                Ok((stream, _addr)) => {
-                    let client_id = self.next_client_id;
-                    self.next_client_id += 1;
-
-                    if let Err(err) = stream.set_nonblocking(true) {
-                        warn!(err = %err, "failed to set client stream nonblocking");
-                        continue;
-                    }
-
-                    // Spawn a thread for the handshake and read loop.
-                    let should_quit = self.should_quit.clone();
-                    let server_event_tx = self.server_event_tx.clone();
-                    std::thread::spawn(move || {
-                        if let Err(err) = client_transport::handle_client_handshake(
-                            stream,
-                            client_id,
-                            &server_event_tx,
-                            &should_quit,
-                        ) {
-                            debug!(client_id, err = %err, "client handshake failed");
-                        }
-                    });
-                }
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    // No more pending connections.
-                    break;
-                }
-                Err(err) => {
-                    error!(err = %err, "client listener accept failed");
-                    break;
-                }
-            }
-        }
-        Ok(())
+        accept_pending_client_connections(
+            &self.client_listener,
+            &mut self.next_client_id,
+            &self.should_quit,
+            &self.server_event_tx,
+        )
     }
 
     /// Drains server events from the dedicated channel.
@@ -856,7 +615,7 @@ impl HeadlessServer {
         terminal_id: &str,
     ) -> Option<&crate::terminal::TerminalRuntime> {
         let terminal_id = self.terminal_id_by_string(terminal_id)?;
-        self.app.state.terminal_runtimes.get(&terminal_id)
+        self.app.terminal_runtimes.get(&terminal_id)
     }
 
     fn write_client_clipboard_image(
@@ -1294,16 +1053,7 @@ impl HeadlessServer {
     }
 
     fn shutdown_terminal_attach_clients(&mut self, terminal_id: &str, reason: String) {
-        let client_ids: Vec<u64> = self
-            .clients
-            .iter()
-            .filter_map(|(&client_id, client)| match &client.mode {
-                ClientConnectionMode::TerminalAttach {
-                    terminal_id: attached,
-                } if attached == terminal_id => Some(client_id),
-                _ => None,
-            })
-            .collect();
+        let client_ids = terminal_attach_client_ids(&self.clients, terminal_id);
 
         for client_id in client_ids {
             self.send_to_client(
@@ -1392,14 +1142,13 @@ impl HeadlessServer {
             .unwrap_or(false);
         let raw_pty_replay = if is_raw_pty {
             self.app
-                .state
                 .terminal_runtimes
                 .get(&real_terminal_id)
                 .map(|r| r.subscribe_raw_pty_with_replay())
         } else {
             None
         };
-        if let Some(runtime) = self.app.state.terminal_runtimes.get(&real_terminal_id) {
+        if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
             runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
         }
         if let Some((snapshot, rx)) = raw_pty_replay {
@@ -1501,6 +1250,7 @@ impl HeadlessServer {
                 rows,
                 cell_width_px,
                 cell_height_px,
+                keybindings,
                 writer,
                 render_encoding,
             } => {
@@ -1518,6 +1268,7 @@ impl HeadlessServer {
                     client_id,
                     ClientConnection::new_with_mode(
                         ClientConnectionMode::App,
+                        keybindings,
                         (cols, rows),
                         crate::kitty_graphics::HostCellSize {
                             width_px: cell_width_px,
@@ -1569,7 +1320,7 @@ impl HeadlessServer {
                     }
                 }
                 self.update_client_outer_focus_from_events(client_id, &events);
-                let interaction = Self::events_include_interaction(&events);
+                let interaction = events_include_interaction(&events);
                 let foreground_changed = if interaction {
                     self.promote_client_to_foreground(client_id)
                 } else {
@@ -1783,7 +1534,31 @@ impl HeadlessServer {
         };
 
         self.sync_foreground_client_state();
-        let response = self.app.handle_api_request(msg.request);
+        let response = if matches!(
+            &msg.request.method,
+            api::schema::Method::ServerReloadConfig(_)
+        ) {
+            let report = self.reload_server_config();
+            serde_json::to_string(&api::schema::SuccessResponse {
+                id: msg.request.id.clone(),
+                result: api::schema::ResponseResult::ConfigReload {
+                    status: report.status,
+                    diagnostics: report.diagnostics,
+                },
+            })
+            .unwrap_or_else(|err| {
+                serde_json::to_string(&api::schema::ErrorResponse {
+                    id: String::new(),
+                    error: api::schema::ErrorBody {
+                        code: "serialization_error".into(),
+                        message: err.to_string(),
+                    },
+                })
+                .unwrap_or_else(|_| "{}".to_string())
+            })
+        } else {
+            self.app.handle_api_request(msg.request)
+        };
         let _ = msg.respond_to.send(response);
 
         // Forward new toast state only when a client-local delivery mode is selected.
@@ -1919,7 +1694,10 @@ impl HeadlessServer {
     }
 
     fn stream_host_mouse_capture_mode(&mut self) {
-        let enabled = self.app.state.should_capture_host_mouse();
+        let enabled = self
+            .app
+            .state
+            .should_capture_host_mouse_from(&self.app.terminal_runtimes);
         let serialized = match Self::frame_server_message(&ServerMessage::MouseCapture { enabled })
         {
             Ok(framed) => framed,
@@ -1962,36 +1740,18 @@ impl HeadlessServer {
     /// Renders the current state to client-sized virtual buffers and streams
     /// frames to all connected clients.
     fn render_and_stream(&mut self) {
-        let foreground_client_id = self.foreground_client_id;
-        let mut render_targets: Vec<RenderTarget> = self
-            .clients
-            .iter()
-            // RawPty-encoded clients receive raw PTY bytes via a dedicated
-            // forwarder task (see spawn_raw_pty_forwarder); they do not
-            // participate in the frame render pipeline.
-            .filter(|(_, client)| client.writer.is_some() && !client.render_state.is_raw_pty())
-            .map(|(&client_id, client)| {
-                (
-                    client_id,
-                    client.terminal_size,
-                    client.cell_size,
-                    foreground_client_id == Some(client_id),
-                    client.mode.clone(),
-                )
-            })
-            .collect();
-
-        render_targets
-            .sort_by_key(|(client_id, _, _, is_foreground, _)| (*is_foreground, *client_id));
+        let render_targets = render_targets(&self.clients, self.foreground_client_id);
 
         if render_targets.is_empty() {
             let (cols, rows) = self.effective_size;
             let area = Rect::new(0, 0, cols, rows);
             let resize_panes = self.app.state.view.pane_infos.is_empty();
-            let _ = crate::server::render_stream::render_virtual(
+            let _ = crate::server::render_stream::render_virtual_with_runtime_registry(
                 &mut self.app.state,
+                &self.app.terminal_runtimes,
                 area,
                 resize_panes,
+                crate::kitty_graphics::HostCellSize::default(),
             );
             debug!(
                 cols,
@@ -2008,21 +1768,26 @@ impl HeadlessServer {
                 ClientConnectionMode::App => {
                     let (buffer, cursor) =
                         if self.app.state.kitty_graphics_enabled && cell_size.is_known() {
-                            crate::server::render_stream::render_virtual_with_cell_size(
+                            crate::server::render_stream::render_virtual_with_runtime_registry(
                                 &mut self.app.state,
+                                &self.app.terminal_runtimes,
                                 area,
                                 is_foreground,
                                 cell_size,
                             )
                         } else {
-                            crate::server::render_stream::render_virtual(
+                            crate::server::render_stream::render_virtual_with_runtime_registry(
                                 &mut self.app.state,
+                                &self.app.terminal_runtimes,
                                 area,
                                 is_foreground,
+                                crate::kitty_graphics::HostCellSize::default(),
                             )
                         };
-                    let hyperlinks =
-                        crate::server::render_stream::visible_hyperlinks(&self.app.state);
+                    let hyperlinks = crate::server::render_stream::visible_hyperlinks(
+                        &self.app.state,
+                        &self.app.terminal_runtimes,
+                    );
                     FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &hyperlinks)
                 }
                 ClientConnectionMode::TerminalAttach { terminal_id } => {
@@ -2058,6 +1823,7 @@ impl HeadlessServer {
                     .graphics
                     .extend(crate::kitty_graphics::encode_local_pane_graphics(
                         &self.app.state,
+                        &self.app.terminal_runtimes,
                         cell_size,
                         &mut next_graphics_cache,
                     ));
@@ -2459,7 +2225,8 @@ fn init_logging() {
 mod tests {
     use super::*;
 
-    use crate::server::protocol::CursorState;
+    use crate::app::AppState;
+    use crate::protocol::CursorState;
 
     fn test_headless_server() -> HeadlessServer {
         let config = crate::config::Config::default();
@@ -2484,6 +2251,7 @@ mod tests {
             .set_nonblocking(true)
             .expect("set listener nonblocking");
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
+        let server_keybindings = app_keybindings(&app);
 
         HeadlessServer {
             app,
@@ -2492,6 +2260,7 @@ mod tests {
             clients: HashMap::new(),
             next_client_id: 1,
             foreground_client_id: None,
+            server_keybindings,
             terminal_attach_owners: HashMap::new(),
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
@@ -2539,6 +2308,68 @@ mod tests {
     }
 
     #[test]
+    fn foreground_client_applies_client_keybindings() {
+        let mut server = test_headless_server();
+        let local_config: crate::config::Config = toml::from_str(
+            r#"
+[keys]
+prefix = "ctrl+a"
+new_tab = "prefix+t"
+"#,
+        )
+        .unwrap();
+        let local_keybindings = local_config.live_keybinds().unwrap();
+        let (writer_a, _control_a, _render_a) = test_client_writer();
+        let (writer_b, _control_b, _render_b) = test_client_writer();
+
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 1,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding: RenderEncoding::SemanticFrame,
+            keybindings: Some(Box::new(local_keybindings)),
+            writer: writer_a,
+        }));
+        assert_eq!(
+            server.app.state.prefix_code,
+            crossterm::event::KeyCode::Char('a')
+        );
+        assert!(server
+            .app
+            .state
+            .keybinds
+            .new_tab
+            .bindings
+            .iter()
+            .any(|binding| binding.label == "prefix+t"));
+
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 2,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding: RenderEncoding::SemanticFrame,
+            keybindings: None,
+            writer: writer_b,
+        }));
+        assert_eq!(
+            server.app.state.prefix_code,
+            crossterm::event::KeyCode::Char('b')
+        );
+        assert!(server
+            .app
+            .state
+            .keybinds
+            .new_tab
+            .bindings
+            .iter()
+            .any(|binding| binding.label == "prefix+c"));
+    }
+
+    #[test]
     fn terminal_attach_rejects_missing_terminal_and_removes_client() {
         let mut server = test_headless_server();
         let (writer, control_rx, _render_rx) = test_client_writer();
@@ -2550,6 +2381,7 @@ mod tests {
             cell_width_px: 0,
             cell_height_px: 0,
             render_encoding: RenderEncoding::TerminalAnsi,
+            keybindings: None,
             writer,
         }));
         assert!(server.clients.contains_key(&7));
@@ -2576,13 +2408,16 @@ mod tests {
         let pane_id = workspace.tabs[0].root_pane;
         server.app.state.workspaces = vec![workspace];
         server.app.state.ensure_test_terminals();
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
-        server.app.state.insert_test_runtime(pane_id, runtime);
         let real_terminal_id = server.app.state.workspaces[0]
             .pane_state(pane_id)
             .expect("pane")
             .attached_terminal_id
             .clone();
+        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        server.app.terminal_runtimes.insert(
+            real_terminal_id.clone(),
+            crate::terminal::TerminalRuntime::from_pane_runtime(runtime),
+        );
         let terminal_id = real_terminal_id.to_string();
 
         let (writer, control_rx, _render_rx) = test_client_writer();
@@ -2595,6 +2430,7 @@ mod tests {
             cell_width_px: 0,
             cell_height_px: 0,
             render_encoding: RenderEncoding::RawPty,
+            keybindings: None,
             writer,
         }));
         assert!(
@@ -2621,7 +2457,6 @@ mod tests {
         let payload: bytes::Bytes = bytes::Bytes::from_static(b"\x1b[1;31mRED\x1b[0m\nplain\r\n");
         let runtime = server
             .app
-            .state
             .terminal_runtimes
             .get(&real_terminal_id)
             .expect("runtime");
@@ -2672,13 +2507,16 @@ mod tests {
         let pane_id = workspace.tabs[0].root_pane;
         server.app.state.workspaces = vec![workspace];
         server.app.state.ensure_test_terminals();
-        let (runtime, mut pty_input_rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
-        server.app.state.insert_test_runtime(pane_id, runtime);
         let real_terminal_id = server.app.state.workspaces[0]
             .pane_state(pane_id)
             .expect("pane")
             .attached_terminal_id
             .clone();
+        let (runtime, mut pty_input_rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+        server.app.terminal_runtimes.insert(
+            real_terminal_id.clone(),
+            crate::terminal::TerminalRuntime::from_pane_runtime(runtime),
+        );
         let terminal_id = real_terminal_id.to_string();
 
         let (writer, _control_rx, _render_rx) = test_client_writer();
@@ -2689,6 +2527,7 @@ mod tests {
             cell_width_px: 0,
             cell_height_px: 0,
             render_encoding: RenderEncoding::RawPty,
+            keybindings: None,
             writer,
         }));
         assert!(
@@ -2721,13 +2560,17 @@ mod tests {
         let pane_id = workspace.tabs[0].root_pane;
         server.app.state.workspaces = vec![workspace];
         server.app.state.ensure_test_terminals();
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
-        server.app.state.insert_test_runtime(pane_id, runtime);
-        let terminal_id = server.app.state.workspaces[0]
+        let real_terminal_id = server.app.state.workspaces[0]
             .pane_state(pane_id)
             .expect("pane")
             .attached_terminal_id
-            .to_string();
+            .clone();
+        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        server.app.terminal_runtimes.insert(
+            real_terminal_id.clone(),
+            crate::terminal::TerminalRuntime::from_pane_runtime(runtime),
+        );
+        let terminal_id = real_terminal_id.to_string();
 
         let (writer, _control_rx, _render_rx) = test_client_writer();
         assert!(server.handle_server_event(ServerEvent::ClientConnected {
@@ -2737,6 +2580,7 @@ mod tests {
             cell_width_px: 0,
             cell_height_px: 0,
             render_encoding: RenderEncoding::RawPty,
+            keybindings: None,
             writer,
         }));
         assert!(
@@ -2785,6 +2629,7 @@ mod tests {
             cell_width_px: 0,
             cell_height_px: 0,
             render_encoding: RenderEncoding::RawPty,
+            keybindings: None,
             writer,
         }));
         assert!(
@@ -2822,6 +2667,7 @@ mod tests {
             cell_width_px: 0,
             cell_height_px: 0,
             render_encoding: RenderEncoding::TerminalAnsi,
+            keybindings: None,
             writer,
         }));
         assert!(
@@ -2839,100 +2685,6 @@ mod tests {
         assert!(!server.terminal_attach_owners.contains_key(&terminal_id));
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(reason, Some(format!("terminal {terminal_id} exited")));
-    }
-
-    #[test]
-    fn client_socket_path_derived_from_api_socket_override() {
-        let path = client_socket_path_from_overrides(Some("/tmp/test-herdr.sock"), None);
-        assert_eq!(path, PathBuf::from("/tmp/test-herdr-client.sock"));
-    }
-
-    #[test]
-    fn client_socket_path_api_override_takes_precedence_over_legacy_client_override() {
-        let path = client_socket_path_from_overrides(
-            Some("/tmp/test-herdr.sock"),
-            Some("/tmp/legacy-client.sock"),
-        );
-        assert_eq!(path, PathBuf::from("/tmp/test-herdr-client.sock"));
-    }
-
-    #[test]
-    fn client_socket_path_respects_legacy_client_override_without_api_override() {
-        let path = client_socket_path_from_overrides(None, Some("/tmp/test-herdr-client.sock"));
-        assert_eq!(path, PathBuf::from("/tmp/test-herdr-client.sock"));
-    }
-
-    #[test]
-    fn client_socket_path_defaults_to_config_dir() {
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
-        crate::session::clear_explicit_session_for_test();
-        let path = client_socket_path_from_overrides(None, None);
-        assert_eq!(path, config::config_dir().join("herdr-client.sock"));
-    }
-
-    #[test]
-    fn derive_client_socket_from_api_socket_without_sock_extension() {
-        let derived = derive_client_socket_from_api_socket(Path::new("/tmp/custom-api"));
-        assert_eq!(derived, PathBuf::from("/tmp/custom-api-client.sock"));
-    }
-
-    #[test]
-    fn prepare_socket_path_removes_stale_socket() {
-        let dir = PathBuf::from(format!(
-            "/tmp/hs-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = fs::create_dir_all(&dir);
-        let socket_path = dir.join("stale.sock");
-
-        // Create a socket file that nobody is listening on.
-        {
-            let _listener = UnixListener::bind(&socket_path).expect("bind stale socket");
-        }
-        // The listener scope ended, so the socket is now stale.
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while std::time::Instant::now() < deadline {
-            if std::os::unix::net::UnixStream::connect(&socket_path).is_err() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        // prepare_socket_path should remove it without error.
-        let result = prepare_socket_path(&socket_path);
-        assert!(result.is_ok(), "should remove stale socket: {result:?}");
-
-        // Socket file should be gone.
-        assert!(!socket_path.exists());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn prepare_socket_path_rejects_live_socket() {
-        let dir = PathBuf::from(format!(
-            "/tmp/hl-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = fs::create_dir_all(&dir);
-        let socket_path = dir.join("live.sock");
-
-        // Bind a live listener.
-        let _listener = UnixListener::bind(&socket_path).expect("bind");
-
-        let result = prepare_socket_path(&socket_path);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AddrInUse);
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3086,8 +2838,9 @@ mod tests {
 
         let area = Rect::new(0, 0, 80, 24);
         let _ = crate::server::render_stream::render_virtual(&mut state, area, true);
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let runtime = state
-            .runtime_for_pane(pane_id)
+            .runtime_for_pane(&terminal_runtimes, pane_id)
             .expect("pane runtime after initial render");
         runtime.scroll_up(6);
         assert!(crate::ui::pane_is_scrolled_back(runtime));
@@ -3241,8 +2994,9 @@ mod tests {
 
         let area = Rect::new(0, 0, 80, 24);
         let _ = crate::server::render_stream::render_virtual(&mut state, area, true);
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let runtime = state
-            .runtime_for_pane(pane_id)
+            .runtime_for_pane(&terminal_runtimes, pane_id)
             .expect("pane runtime after initial render");
         runtime.scroll_up(6);
         assert!(crate::ui::pane_is_scrolled_back(runtime));
@@ -3535,7 +3289,7 @@ mod tests {
             server
                 .app
                 .state
-                .runtime_for_pane(active_pane)
+                .runtime_for_pane(&server.app.terminal_runtimes, active_pane)
                 .unwrap()
                 .current_size(),
             expected
@@ -3544,7 +3298,7 @@ mod tests {
             server
                 .app
                 .state
-                .runtime_for_pane(background_pane)
+                .runtime_for_pane(&server.app.terminal_runtimes, background_pane)
                 .unwrap()
                 .current_size(),
             expected

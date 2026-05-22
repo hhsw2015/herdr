@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use super::Config;
@@ -9,13 +9,13 @@ use crate::input::TerminalKey;
 
 pub type KeyCombo = (KeyCode, KeyModifiers);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LiveKeybindConfig {
     pub prefix: KeyCombo,
     pub keybinds: Keybinds,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum BindingConfig {
     One(String),
@@ -45,7 +45,7 @@ impl BindingConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandKeybindType {
     #[default]
@@ -53,7 +53,7 @@ pub enum CommandKeybindType {
     Pane,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CommandKeybindConfig {
     /// Key that runs a command. Use `prefix+g` for prefix mode or a modified chord for direct mode.
@@ -246,6 +246,9 @@ pub struct Keybinds {
     pub help: ActionKeybinds,
     pub settings: ActionKeybinds,
     pub new_workspace: ActionKeybinds,
+    pub new_worktree: ActionKeybinds,
+    pub open_worktree: ActionKeybinds,
+    pub remove_worktree: ActionKeybinds,
     pub rename_workspace: ActionKeybinds,
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
@@ -375,6 +378,9 @@ impl Config {
             help: action!("keys.help", &self.keys.help),
             settings: action!("keys.settings", &self.keys.settings),
             new_workspace: action!("keys.new_workspace", &self.keys.new_workspace),
+            new_worktree: action!("keys.new_worktree", &self.keys.new_worktree),
+            open_worktree: action!("keys.open_worktree", &self.keys.open_worktree),
+            remove_worktree: action!("keys.remove_worktree", &self.keys.remove_worktree),
             rename_workspace: action!("keys.rename_workspace", &self.keys.rename_workspace),
             close_workspace: action!("keys.close_workspace", &self.keys.close_workspace),
             workspace_picker: action!("keys.workspace_picker", &self.keys.workspace_picker),
@@ -1039,6 +1045,25 @@ next_tab = "prefix+n"
                 KeyModifiers::empty()
             ))]
         );
+    }
+
+    #[test]
+    fn new_worktree_defaults_to_prefix_shift_g() {
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.new_worktree),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('g'),
+                KeyModifiers::SHIFT
+            ))]
+        );
+    }
+
+    #[test]
+    fn open_and_remove_worktree_keybinds_are_unset_by_default() {
+        let kb = Config::default().keybinds();
+        assert!(kb.open_worktree.bindings.is_empty());
+        assert!(kb.remove_worktree.bindings.is_empty());
     }
 
     #[test]

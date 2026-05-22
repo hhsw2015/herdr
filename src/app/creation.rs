@@ -11,7 +11,7 @@ impl App {
         self.state
             .workspaces
             .get(ws_idx)?
-            .resolved_identity_cwd_from(&self.state.terminals, &self.state.terminal_runtimes)
+            .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
     }
 
     pub(super) fn workspace_creation_source(&self) -> Option<usize> {
@@ -89,9 +89,7 @@ impl App {
             self.state.host_terminal_theme,
             &self.state.default_shell,
         )?;
-        self.state
-            .terminal_runtimes
-            .insert(terminal.id.clone(), runtime);
+        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
         if focus {
             ws.switch_tab(idx);
@@ -124,7 +122,7 @@ impl App {
         });
     }
 
-    pub(super) fn create_workspace_with_options(
+    pub(crate) fn create_workspace_with_options(
         &mut self,
         initial_cwd: std::path::PathBuf,
         focus: bool,
@@ -141,9 +139,7 @@ impl App {
             self.render_notify.clone(),
             self.render_dirty.clone(),
         )?;
-        self.state
-            .terminal_runtimes
-            .insert(terminal.id.clone(), runtime);
+        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
         self.state.workspaces.push(ws);
         let idx = self.state.workspaces.len() - 1;
@@ -299,11 +295,7 @@ impl App {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
             cwd: ws.tabs[tab_idx]
-                .cwd_for_pane(
-                    pane_id,
-                    &self.state.terminals,
-                    &self.state.terminal_runtimes,
-                )
+                .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
@@ -318,7 +310,9 @@ impl App {
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
     ) -> Option<(&crate::terminal::TerminalRuntime, String)> {
-        let runtime = self.state.runtime_for_pane_in_workspace(ws_idx, pane_id)?;
+        let runtime =
+            self.state
+                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
         Some((runtime, self.public_workspace_id(ws_idx)))
     }
 
@@ -327,7 +321,8 @@ impl App {
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
     ) -> Option<&crate::terminal::TerminalRuntime> {
-        self.state.runtime_for_pane_in_workspace(ws_idx, pane_id)
+        self.state
+            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
     }
 
     pub(super) fn workspace_info(&self, index: usize) -> crate::api::schema::WorkspaceInfo {
@@ -336,7 +331,7 @@ impl App {
         crate::api::schema::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index),
             number: index + 1,
-            label: ws.display_name_from(&self.state.terminals, &self.state.terminal_runtimes),
+            label: ws.display_name_from(&self.state.terminals, &self.terminal_runtimes),
             focused: self.state.active == Some(index),
             pane_count: ws.public_pane_numbers.len(),
             tab_count: ws.tabs.len(),

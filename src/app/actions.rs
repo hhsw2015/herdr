@@ -160,21 +160,42 @@ impl AppState {
             return;
         }
 
+        let entries = crate::ui::workspace_list_entries(self);
+        let Some(target_entry_idx) = entries.iter().position(|entry| {
+            matches!(
+                entry,
+                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } if *ws_idx == idx
+            )
+        }) else {
+            return;
+        };
+
+        self.workspace_scroll = crate::ui::normalized_workspace_scroll(
+            self,
+            self.view.sidebar_rect,
+            self.workspace_scroll,
+        );
         let mut cards = crate::ui::compute_workspace_card_areas(self, self.view.sidebar_rect);
-        if cards.is_empty() {
-            self.workspace_scroll = idx;
+        if cards.iter().any(|card| card.ws_idx == idx) {
             return;
         }
 
-        let first_idx = cards.first().map(|card| card.ws_idx).unwrap_or(0);
-        if idx < first_idx {
-            self.workspace_scroll = idx;
+        if target_entry_idx < self.workspace_scroll {
+            self.workspace_scroll = target_entry_idx;
             return;
         }
 
-        while cards.last().map(|card| card.ws_idx).unwrap_or(idx) < idx {
+        while !cards.iter().any(|card| card.ws_idx == idx) {
             let previous_scroll = self.workspace_scroll;
             self.workspace_scroll = self.workspace_scroll.saturating_add(1);
+            if self.workspace_scroll == previous_scroll {
+                break;
+            }
+            self.workspace_scroll = crate::ui::normalized_workspace_scroll(
+                self,
+                self.view.sidebar_rect,
+                self.workspace_scroll,
+            );
             if self.workspace_scroll == previous_scroll {
                 break;
             }
@@ -252,24 +273,66 @@ impl AppState {
         changed
     }
 
-    pub fn next_workspace(&mut self) {
-        if !self.workspaces.is_empty() {
-            let current = self.active.unwrap_or(self.selected);
-            let next = (current + 1) % self.workspaces.len();
-            self.switch_workspace(next);
+    pub(crate) fn visible_workspace_order(&self) -> Vec<usize> {
+        let order = crate::ui::workspace_list_entries(self)
+            .into_iter()
+            .map(|entry| match entry {
+                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => ws_idx,
+            })
+            .collect::<Vec<_>>();
+        if order.is_empty() {
+            (0..self.workspaces.len()).collect()
+        } else {
+            order
         }
     }
 
-    pub fn previous_workspace(&mut self) {
-        if !self.workspaces.is_empty() {
-            let current = self.active.unwrap_or(self.selected);
-            let prev = if current == 0 {
-                self.workspaces.len() - 1
-            } else {
-                current - 1
-            };
-            self.switch_workspace(prev);
+    pub(crate) fn workspace_at_visible_position(&self, position: usize) -> Option<usize> {
+        self.visible_workspace_order().get(position).copied()
+    }
+
+    pub(crate) fn move_selected_workspace_by_visible_delta(&mut self, delta: isize) {
+        if self.workspaces.is_empty() {
+            return;
         }
+        let order = self.visible_workspace_order();
+        let current_pos = order
+            .iter()
+            .position(|idx| *idx == self.selected)
+            .unwrap_or(0);
+        let target_pos = current_pos
+            .saturating_add_signed(delta)
+            .min(order.len().saturating_sub(1));
+        if let Some(ws_idx) = order.get(target_pos).copied() {
+            self.selected = ws_idx;
+            self.ensure_workspace_visible(ws_idx);
+        }
+    }
+
+    pub fn next_workspace(&mut self) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        let current = self.active.unwrap_or(self.selected);
+        let order = self.visible_workspace_order();
+        let current_pos = order.iter().position(|idx| *idx == current).unwrap_or(0);
+        let next = order[(current_pos + 1) % order.len()];
+        self.switch_workspace(next);
+    }
+
+    pub fn previous_workspace(&mut self) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        let current = self.active.unwrap_or(self.selected);
+        let order = self.visible_workspace_order();
+        let current_pos = order.iter().position(|idx| *idx == current).unwrap_or(0);
+        let prev = if current_pos == 0 {
+            order[order.len() - 1]
+        } else {
+            order[current_pos - 1]
+        };
+        self.switch_workspace(prev);
     }
 
     pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) {
@@ -515,11 +578,11 @@ impl AppState {
                         .any(|pane| pane.attached_terminal_id == terminal_id)
                 })
             });
-            if !still_attached {
-                self.terminals.remove(&terminal_id);
-                if let Some(runtime) = self.terminal_runtimes.remove(&terminal_id) {
-                    runtime.shutdown();
-                }
+            if !still_attached
+                && self.terminals.remove(&terminal_id).is_some()
+                && !self.terminal_runtime_shutdowns.contains(&terminal_id)
+            {
+                self.terminal_runtime_shutdowns.push(terminal_id);
             }
         }
     }
@@ -531,21 +594,44 @@ impl AppState {
         self.selection = None;
         self.selection_autoscroll = None;
         self.mark_session_dirty();
-        let terminal_ids = self.terminal_ids_for_workspace(self.selected);
-        let workspace_id = self.workspaces[self.selected].id.clone();
-        crate::logging::workspace_closed(&workspace_id);
-        // Mirror api.rs workspace.close: broadcast WorkspaceClosed
-        // before mutating the vec so subscribers (cmux) tear down
-        // their bindings before we drop terminal state. Keep the id
-        // in a local since `self.workspaces.remove` invalidates it.
-        let closed_workspace_id = workspace_id.clone();
-        self.pending_events.push(crate::api::schema::EventEnvelope {
-            event: crate::api::schema::EventKind::WorkspaceClosed,
-            data: crate::api::schema::EventData::WorkspaceClosed {
-                workspace_id: closed_workspace_id,
-            },
-        });
-        self.workspaces.remove(self.selected);
+        let close_indices = self
+            .workspaces
+            .get(self.selected)
+            .and_then(|ws| ws.worktree_space())
+            .filter(|space| !space.is_linked_worktree)
+            .map(|space| {
+                self.workspaces
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, ws)| {
+                        ws.worktree_space()
+                            .is_some_and(|member| member.key == space.key)
+                            .then_some(idx)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|indices| indices.len() >= 2)
+            .unwrap_or_else(|| vec![self.selected]);
+
+        let mut terminal_ids = Vec::new();
+        for idx in &close_indices {
+            terminal_ids.extend(self.terminal_ids_for_workspace(*idx));
+            if let Some(workspace_id) = self.workspaces.get(*idx).map(|ws| ws.id.clone()) {
+                crate::logging::workspace_closed(&workspace_id);
+                // Mirror api.rs workspace.close: broadcast WorkspaceClosed
+                // before mutating the vec so subscribers (cmux) tear down
+                // their bindings before we drop terminal state.
+                self.pending_events.push(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::WorkspaceClosed,
+                    data: crate::api::schema::EventData::WorkspaceClosed {
+                        workspace_id,
+                    },
+                });
+            }
+        }
+        for idx in close_indices.iter().rev() {
+            self.workspaces.remove(*idx);
+        }
         self.remove_unattached_terminal_ids(terminal_ids);
         if self.workspaces.is_empty() {
             self.active = None;
@@ -821,7 +907,7 @@ impl AppState {
         self.selection_autoscroll = None;
     }
 
-    pub fn copy_selection(&mut self) {
+    pub fn copy_selection(&mut self, terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry) {
         let mut sel = match self.selection.take() {
             Some(sel) => sel,
             None => return,
@@ -836,7 +922,7 @@ impl AppState {
         };
 
         let text = self
-            .runtime_for_pane_in_workspace(ws_idx, sel.pane_id)
+            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, sel.pane_id)
             .and_then(|rt| rt.extract_selection(&sel));
 
         if let Some(text) = text {
@@ -856,7 +942,11 @@ impl AppState {
 // ---------------------------------------------------------------------------
 
 impl AppState {
-    pub fn apply_workspace_git_statuses(&mut self, results: Vec<WorkspaceGitStatus>) -> bool {
+    pub fn apply_workspace_git_statuses(
+        &mut self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        results: Vec<WorkspaceGitStatus>,
+    ) -> bool {
         let mut changed = false;
         for result in results {
             let Some(ws_idx) = self
@@ -868,7 +958,7 @@ impl AppState {
             };
 
             if self.workspaces[ws_idx]
-                .resolved_identity_cwd_from(&self.terminals, &self.terminal_runtimes)
+                .resolved_identity_cwd_from(&self.terminals, terminal_runtimes)
                 .as_ref()
                 != Some(&result.resolved_identity_cwd)
             {
@@ -882,6 +972,10 @@ impl AppState {
             }
             if ws.cached_git_ahead_behind != result.ahead_behind {
                 ws.cached_git_ahead_behind = result.ahead_behind;
+                changed = true;
+            }
+            if ws.cached_git_space != result.space {
+                ws.cached_git_space = result.space;
                 changed = true;
             }
         }
@@ -972,9 +1066,11 @@ impl AppState {
             // dispatch; never touches AppState.
             AppEvent::ClipboardWrite { .. } => Vec::new(),
             AppEvent::GitStatusRefreshed { results } => {
-                self.apply_workspace_git_statuses(results);
+                let _ = results;
                 Vec::new()
             }
+            AppEvent::WorktreeAddFinished(_) => Vec::new(),
+            AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
         }
     }
 
@@ -1151,6 +1247,16 @@ mod tests {
         state
     }
 
+    fn mark_linked_worktree(state: &mut AppState, ws_idx: usize) {
+        state.workspaces[ws_idx].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: format!("/repo/worktree-{ws_idx}").into(),
+            is_linked_worktree: true,
+        });
+    }
+
     #[test]
     fn apply_workspace_git_statuses_updates_matching_workspace() {
         let mut state = app_with_workspaces(&["one", "two"]);
@@ -1158,12 +1264,17 @@ mod tests {
         let first_cwd = state.workspaces[0].resolved_identity_cwd().unwrap();
         let second_id = state.workspaces[1].id.clone();
 
-        let changed = state.apply_workspace_git_statuses(vec![WorkspaceGitStatus {
-            workspace_id: first_id,
-            resolved_identity_cwd: first_cwd,
-            branch: Some("main".into()),
-            ahead_behind: Some((2, 1)),
-        }]);
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_workspace_git_statuses(
+            &terminal_runtimes,
+            vec![WorkspaceGitStatus {
+                workspace_id: first_id,
+                resolved_identity_cwd: first_cwd,
+                branch: Some("main".into()),
+                ahead_behind: Some((2, 1)),
+                space: None,
+            }],
+        );
 
         assert!(changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("main"));
@@ -1179,12 +1290,17 @@ mod tests {
         state.workspaces[0].cached_git_branch = Some("old".into());
         state.workspaces[0].cached_git_ahead_behind = Some((1, 0));
 
-        let changed = state.apply_workspace_git_statuses(vec![WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
-            branch: Some("main".into()),
-            ahead_behind: Some((0, 1)),
-        }]);
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_workspace_git_statuses(
+            &terminal_runtimes,
+            vec![WorkspaceGitStatus {
+                workspace_id,
+                resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
+                branch: Some("main".into()),
+                ahead_behind: Some((0, 1)),
+                space: None,
+            }],
+        );
 
         assert!(!changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
@@ -1199,16 +1315,51 @@ mod tests {
         state.workspaces[0].cached_git_branch = Some("main".into());
         state.workspaces[0].cached_git_ahead_behind = Some((1, 2));
 
-        let changed = state.apply_workspace_git_statuses(vec![WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd: cwd,
-            branch: None,
-            ahead_behind: None,
-        }]);
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_workspace_git_statuses(
+            &terminal_runtimes,
+            vec![WorkspaceGitStatus {
+                workspace_id,
+                resolved_identity_cwd: cwd,
+                branch: None,
+                ahead_behind: None,
+                space: None,
+            }],
+        );
 
         assert!(changed);
         assert_eq!(state.workspaces[0].branch(), None);
         assert_eq!(state.workspaces[0].git_ahead_behind(), None);
+    }
+
+    #[test]
+    fn apply_workspace_git_statuses_does_not_change_worktree_membership() {
+        let mut state = app_with_workspaces(&["one"]);
+        mark_linked_worktree(&mut state, 0);
+        let workspace_id = state.workspaces[0].id.clone();
+        let cwd = state.workspaces[0].resolved_identity_cwd().unwrap();
+        let membership = state.workspaces[0].worktree_space().cloned();
+
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_workspace_git_statuses(
+            &terminal_runtimes,
+            vec![WorkspaceGitStatus {
+                workspace_id,
+                resolved_identity_cwd: cwd,
+                branch: Some("scratch".into()),
+                ahead_behind: None,
+                space: Some(crate::workspace::GitSpaceMetadata {
+                    key: "other-repo-key".into(),
+                    checkout_key: "/other/checkout".into(),
+                    label: "other".into(),
+                    repo_root: "/other/repo".into(),
+                    is_linked_worktree: false,
+                }),
+            }],
+        );
+
+        assert!(changed);
+        assert_eq!(state.workspaces[0].worktree_space().cloned(), membership);
     }
 
     #[test]
@@ -1444,6 +1595,34 @@ mod tests {
         assert_eq!(state.selected, 1);
         assert_eq!(state.active, Some(1));
         assert_eq!(state.workspaces[1].custom_name.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn close_parent_worktree_workspace_closes_group() {
+        let mut state = app_with_workspaces(&["main", "issue", "notes"]);
+        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr".into(),
+            is_linked_worktree: false,
+        });
+        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-issue".into(),
+            is_linked_worktree: true,
+        });
+        state.selected = 0;
+        state.active = Some(0);
+
+        state.close_selected_workspace();
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "notes");
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.selected, 0);
     }
 
     #[test]
@@ -1990,5 +2169,33 @@ mod tests {
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "selected");
         assert!(!state.terminals.contains_key(&active_terminal_id));
+    }
+
+    #[test]
+    fn close_tab_last_tab_in_linked_worktree_closes_workspace_only() {
+        let mut state = app_with_workspaces(&["selected", "active"]);
+        mark_linked_worktree(&mut state, 1);
+        state.active = Some(1);
+        state.selected = 0;
+
+        state.close_tab();
+
+        assert_eq!(state.request_remove_linked_worktree, None);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "selected");
+    }
+
+    #[test]
+    fn close_pane_last_pane_in_linked_worktree_closes_workspace_only() {
+        let mut state = app_with_workspaces(&["selected", "active"]);
+        mark_linked_worktree(&mut state, 1);
+        state.active = Some(1);
+        state.selected = 0;
+
+        state.close_pane();
+
+        assert_eq!(state.request_remove_linked_worktree, None);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "selected");
     }
 }
