@@ -13,6 +13,10 @@ env:
 
 jobs:
   close:
+    # cmux fork (hhsw2015/herdr) doesn't manage upstream's issue
+    # tracker and lacks the KANGAL_GITHUB_TOKEN secret. Skip on
+    # forks so this workflow doesn't fail on every push.
+    if: github.repository == 'ogulcancelik/herdr'
     runs-on: ubuntu-latest
 
     steps:

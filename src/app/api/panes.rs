@@ -71,6 +71,14 @@ impl App {
             event: EventKind::PaneCreated,
             data: EventData::PaneCreated { pane: pane.clone() },
         });
+        // cmux mirrors layout from LayoutChanged; emit after PaneCreated
+        // so subscribers can bind the new pane first, then redraw.
+        if let Some(tree) = self.layout_tree(ws_idx, target_tab_idx) {
+            self.emit_event(EventEnvelope {
+                event: EventKind::LayoutChanged,
+                data: EventData::LayoutChanged { tree },
+            });
+        }
 
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
@@ -282,6 +290,10 @@ impl App {
         };
         let workspace_id = self.state.workspaces[ws_idx].id.clone();
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+        // Capture the pane's tab BEFORE close so we can emit
+        // LayoutChanged afterwards — once close_pane runs the pane
+        // is gone and find_tab_index_for_pane returns None.
+        let tab_idx_pre_close = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id);
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return pane_not_found(id, &target.pane_id);
@@ -314,6 +326,17 @@ impl App {
                     workspace_id,
                 },
             });
+            // cmux follows layout changes through LayoutChanged. Use
+            // the pre-close tab_idx since the pane is no longer
+            // discoverable via find_tab_index_for_pane.
+            if let Some(tab_idx) = tab_idx_pre_close {
+                if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
+                    self.emit_event(EventEnvelope {
+                        event: EventKind::LayoutChanged,
+                        data: EventData::LayoutChanged { tree },
+                    });
+                }
+            }
         }
 
         encode_success(id, ResponseResult::Ok {})
