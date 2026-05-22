@@ -265,6 +265,40 @@ fn multiple_requests_share_one_socket_connection() {
     cleanup_spawned_herdr(child, base);
 }
 
+#[test]
+fn interleaved_requests_on_one_socket_preserve_send_order() {
+    // Documents the daemon's head-of-line ordering on a persistent
+    // connection: the read/dispatch/write loop in handle_connection
+    // is strictly sequential. If a client pipelines `req_a` then
+    // `req_b` without reading `a`'s response first, `b` only starts
+    // executing after `a`'s response is fully written — even when
+    // `b` would naturally complete sooner. Locking this contract
+    // here so a future async-rework of handle_connection has to
+    // either preserve it or update this test (review MED-11 of cmux
+    // 3c071dac).
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    let mut reader = JsonLineReader::connect(&socket_path);
+    // Pipeline two pings without reading in between.
+    reader.send_line(r#"{"id":"req_a","method":"ping","params":{}}"#);
+    reader.send_line(r#"{"id":"req_b","method":"ping","params":{}}"#);
+
+    let first = reader.read_json_line(Duration::from_secs(5));
+    let second = reader.read_json_line(Duration::from_secs(5));
+    assert_eq!(first["id"], "req_a", "first response must be for req_a");
+    assert_eq!(second["id"], "req_b", "second response must be for req_b");
+
+    drop(reader);
+    cleanup_spawned_herdr(child, base);
+}
+
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn workspace_list_and_create_round_trip() {

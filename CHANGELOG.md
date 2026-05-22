@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.6.0-cmux10] - 2026-05-22
+
+### Fixed
+- `Method::PaneWaitForOutput` now logs `api_request_failed` when the underlying `wait_for_output` errors out, instead of leaving a dangling `api_request_started` with no terminal log. Caught by review HIGH-7 of the cmux persistent api-bridge work (cmux SHA 3c071dac).
+
+### Tests
+- `interleaved_requests_on_one_socket_preserve_send_order` documents the daemon's strict head-of-line ordering on a persistent connection: pipelined requests get responses in send order. A future async-rework of `handle_connection` that loses this property has to either preserve it or update the test.
+
 ## [0.6.0-cmux9] - 2026-05-22
 
 ### Changed

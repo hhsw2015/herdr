@@ -204,9 +204,23 @@ fn handle_connection(
                 return result;
             }
             Method::PaneWaitForOutput(params) => {
-                let Some(response) =
-                    wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?
-                else {
+                let wait_result =
+                    wait_for_output(request_id.clone(), params, &mut stream, api_tx, running);
+                let Some(response) = (match wait_result {
+                    Ok(value) => value,
+                    Err(err) => {
+                        // Log the failure so the request that opened
+                        // with api_request_started has a matching
+                        // terminal log instead of dangling — review
+                        // HIGH-7 of cmux 3c071dac.
+                        crate::logging::api_request_failed(
+                            &request_id,
+                            method,
+                            &err.to_string(),
+                        );
+                        return Err(err);
+                    }
+                }) else {
                     crate::logging::api_request_completed(
                         &request_id,
                         method,
