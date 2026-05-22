@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0-cmux6] - 2026-05-22
+
+### Added
+- Merged upstream `ogulcancelik/herdr` master (10 commits): client/server boundary refactor splitting `app/api.rs` into per-domain handler files (`agents`/`tabs`/`workspaces`/`panes`/`integrations`/`responses`), git worktree workspace management, configurable `ui.mouse_scroll_lines`, `--remote-keybindings local|server`, named-session reattach hints, agent allow-list for CJK IME cursor reveal, Cursor/Antigravity CLI detection.
+- Migrated cmux-only RPC handlers into `src/app/api/cmux.rs` so they live alongside upstream's split api modules: `pane.resize`, `layout.snapshot`, `pane.set_split_ratio`, `pane.swap`, `pane.focus`, `pane.set_zoom`, `tab.reorder`.
+
+### Fixed
+- `pane.split` and `pane.close` now emit `LayoutChanged` after `PaneCreated` / `PaneClosed` so cmux's mirrored sidebar can reshape its tree without polling.
+- Restored events.subscribe live-only behavior across all event subscription kinds (`current_sequence` high-water mark threaded into every variant), so cmux reattach no longer replays the previous session's buffered LayoutChanged events.
+- `Subscription::PaneAgentStatusChanged` with `pane_id: None` now routes through `EventHub` instead of the per-pane poller; cmux's global agent-status mirror receives every status change again.
+
 ## Unreleased
 
 ### Added
