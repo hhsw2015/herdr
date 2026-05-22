@@ -278,6 +278,11 @@ jobs:
 
   update-latest-json:
     needs: release
+    # cmux fork uses suffixed versions (X.Y.Z-cmuxN) that the upstream
+    # parse_version() rejects; the manifest lives on upstream's website
+    # anyway. Only run on upstream so the cmux fork's tag CI stays
+    # green.
+    if: github.repository == 'ogulcancelik/herdr'
     runs-on: ubuntu-latest
     permissions:
       contents: write
