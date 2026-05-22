@@ -46,8 +46,7 @@ pub(super) struct ActiveOutputMatchedSubscription {
 }
 
 pub(super) struct ActiveAgentStatusChangedSubscription {
-    /// `None` = global subscription (live-only, no polling).
-    pane_id: Option<String>,
+    pane_id: String,
     status_filter: Option<crate::api::schema::AgentStatus>,
     last_status: Option<crate::api::schema::AgentStatus>,
     request_prefix: String,
@@ -194,24 +193,30 @@ impl ActiveSubscription {
                 pane_id,
                 agent_status,
             } => {
-                // Global subscription (pane_id=None): live-only, no
-                // probe. cmux uses this to monitor agent status across
-                // all panes without enumerating up front.
-                let last_status = if let Some(ref pid) = pane_id {
-                    let probe = pane_get(format!("{request_id}:sub:{index}:probe"), pid, api_tx)?;
-                    Some(probe.agent_status)
+                // Global subscription (pane_id=None) wants every
+                // pane-agent-status change broadcast across the daemon.
+                // Per-pane subscription polls a specific pane via
+                // pane.get. The two paths are different on purpose:
+                // global routes through EventHub so cmux can mirror the
+                // sidebar without enumerating panes up front; per-pane
+                // polls so the CLI agent-watch can return on first
+                // matching status.
+                if let Some(pid) = pane_id {
+                    let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pid, api_tx)?;
+                    Ok(Self::AgentStatusChanged(
+                        ActiveAgentStatusChangedSubscription {
+                            pane_id: pid,
+                            status_filter: agent_status,
+                            last_status: Some(probe.agent_status),
+                            request_prefix: format!("{request_id}:sub:{index}"),
+                        },
+                    ))
                 } else {
-                    None
-                };
-
-                Ok(Self::AgentStatusChanged(
-                    ActiveAgentStatusChangedSubscription {
-                        pane_id,
-                        status_filter: agent_status,
-                        last_status,
-                        request_prefix: format!("{request_id}:sub:{index}"),
-                    },
-                ))
+                    Ok(Self::Event(ActiveEventSubscription {
+                        event_kind: crate::api::schema::EventKind::PaneAgentStatusChanged,
+                        last_sequence,
+                    }))
+                }
             }
         }
     }
@@ -283,9 +288,12 @@ impl ActiveOutputMatchedSubscription {
 
 impl ActiveAgentStatusChangedSubscription {
     fn poll(&mut self, api_tx: &ApiRequestSender) -> Option<SubscriptionEventEnvelope> {
-        // Global subscription: live-only, no per-pane polling.
-        let pane_id = self.pane_id.as_ref()?;
-        let pane = pane_get(format!("{}:pane", self.request_prefix), pane_id, api_tx).ok()?;
+        let pane = pane_get(
+            format!("{}:pane", self.request_prefix),
+            &self.pane_id,
+            api_tx,
+        )
+        .ok()?;
         let current_status = pane.agent_status;
         let previous_status = self.last_status.replace(current_status);
         if previous_status.is_none() || previous_status == Some(current_status) {
