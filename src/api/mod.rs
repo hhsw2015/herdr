@@ -44,6 +44,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneSetZoom(_)
             | Method::PaneSwap(_)
             | Method::PaneFocus(_)
+            | Method::TabReorder(_)
     )
 }
 
