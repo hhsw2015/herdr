@@ -334,17 +334,11 @@ impl App {
     /// to upstream's not-implemented response. Unmatched method is
     /// dropped — caller doesn't need it back, and returning it inflates
     /// the Result enum past clippy's result-large-err threshold.
-    pub(super) fn dispatch_cmux_method(
-        &mut self,
-        id: String,
-        method: Method,
-    ) -> Option<String> {
+    pub(super) fn dispatch_cmux_method(&mut self, id: String, method: Method) -> Option<String> {
         match method {
             Method::PaneResize(params) => Some(self.handle_pane_resize(id, params)),
             Method::LayoutSnapshot(params) => Some(self.handle_layout_snapshot(id, params)),
-            Method::PaneSetSplitRatio(params) => {
-                Some(self.handle_pane_set_split_ratio(id, params))
-            }
+            Method::PaneSetSplitRatio(params) => Some(self.handle_pane_set_split_ratio(id, params)),
             Method::PaneSwap(params) => Some(self.handle_pane_swap(id, params)),
             Method::PaneFocus(target) => Some(self.handle_pane_focus(id, target)),
             Method::PaneSetZoom(params) => Some(self.handle_pane_set_zoom(id, params)),
