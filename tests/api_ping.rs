@@ -232,6 +232,39 @@ fn ping_over_socket_returns_version() {
     cleanup_spawned_herdr(child, base);
 }
 
+#[test]
+fn multiple_requests_share_one_socket_connection() {
+    // Locks the persistent-api-bridge protocol from cmux task #247:
+    // a single socket connection must accept multiple sequential
+    // non-streaming requests and emit one response per request.
+    // Without this, each cmux pane.resize / pane.set_split_ratio
+    // RPC over SSH paid a ~700ms ssh+bincode handshake cost,
+    // saturating the SSH master during a TUI/cmux divider drag and
+    // starving the raw-pty-attach output channel multiplexed on
+    // top of it.
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    // Open ONE connection, send three pings, expect three responses.
+    let mut reader = JsonLineReader::connect(&socket_path);
+    for i in 0..3 {
+        let id = format!("ping_{i}");
+        reader.send_line(&format!(r#"{{"id":"{id}","method":"ping","params":{{}}}}"#));
+        let value = reader.read_json_line(Duration::from_secs(5));
+        assert_eq!(value["id"], id, "response id must match request id");
+        assert_eq!(value["result"]["type"], "pong");
+    }
+
+    drop(reader);
+    cleanup_spawned_herdr(child, base);
+}
+
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn workspace_list_and_create_round_trip() {

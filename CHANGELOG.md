@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.0-cmux9] - 2026-05-22
+
+### Changed
+- API socket connections now stay open for multiple sequential non-streaming requests instead of closing after the first response. Streaming methods (`events.subscribe`, `pane.wait_for_output`) still own the connection. Backward-compat: legacy single-shot clients close the socket after one request, the daemon's read loop hits `read == 0` and exits gracefully. Persistent clients (e.g. cmux's long-lived api-bridge subprocess) reuse one ssh channel for many RPCs, eliminating the ~700ms ssh+bincode handshake per call that was saturating the SSH master during cmux divider drags. Locked by `multiple_requests_share_one_socket_connection` integration test.
+
 ## [0.6.0-cmux8] - 2026-05-22
 
 ### Fixed
