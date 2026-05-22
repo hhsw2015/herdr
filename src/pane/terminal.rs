@@ -157,6 +157,24 @@ impl PaneTerminal {
         self.ghostty.visible_ansi()
     }
 
+    /// Snapshot the current visible viewport as a byte sequence
+    /// suitable for cmux's `raw-pty-attach` replay. Prefixes a full
+    /// terminal reset (RIS) + alt-screen exit + clear-screen so the
+    /// receiving emulator starts from a known state, then emits the
+    /// current visible viewport as ANSI bytes — a single instant
+    /// frame, not the historical byte stream that would otherwise
+    /// re-animate the user's last drags / typing on every reattach.
+    pub fn snapshot_for_replay(&self) -> Vec<u8> {
+        let visible = self.ghostty.visible_ansi();
+        let mut out = Vec::with_capacity(visible.len() + 32);
+        // ESC [ ? 1049 l → leave alt screen if any
+        // ESC c          → full reset (RIS): clears screen, scrollback,
+        //                  attributes, cursor home
+        out.extend_from_slice(b"\x1b[?1049l\x1bc");
+        out.extend_from_slice(visible.as_bytes());
+        out
+    }
+
     pub fn detection_text(&self) -> String {
         self.ghostty.detection_text()
     }

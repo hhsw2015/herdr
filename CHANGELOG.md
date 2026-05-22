@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.6.0-cmux5] - 2026-05-22
+
+### Fixed
+- `events.subscribe` no longer replays the EventHub's buffered tail to fresh subscribers. Default `last_sequence` is now the hub's current high-water sequence instead of `0`. Without this, every cmux reattach observed up to 512 historical LayoutChanged events and walked the divider through every prior position before settling on current state — visible re-animation of the user's earlier drags. Initial state is still available via `layout.snapshot` / `workspace.list` / `tab.list`; events.subscribe is for live updates only.
+
+### Added
+- `PaneTerminal::snapshot_for_replay()` returns a reset+visible-viewport ANSI byte sequence intended for `raw-pty-attach` clients on first attach. Not yet wired into the subscribe path; the events.subscribe fix above already eliminates the user-visible replay.
+
 ## [0.6.0-cmux4] - 2026-05-21
 
 ### Fixed

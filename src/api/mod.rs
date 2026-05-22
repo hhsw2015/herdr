@@ -97,6 +97,19 @@ impl EventHub {
             .cloned()
             .collect()
     }
+
+    /// Current high-water sequence — used by `events.subscribe` so a
+    /// fresh subscription only sees events emitted AFTER it starts,
+    /// not the buffered tail. Otherwise cmux's reattach replays
+    /// every cached LayoutChanged from the previous session and the
+    /// user watches the divider re-animate through old positions
+    /// before settling on current state.
+    pub fn current_sequence(&self) -> u64 {
+        let Ok(state) = self.inner.lock() else {
+            return 0;
+        };
+        state.next_sequence
+    }
 }
 
 pub fn socket_path() -> PathBuf {
@@ -754,76 +767,76 @@ impl ActiveSubscription {
         request_id: &str,
         index: usize,
         api_tx: &ApiRequestSender,
-        _event_hub: &EventHub,
+        event_hub: &EventHub,
     ) -> Result<Self, ErrorResponse> {
         match subscription {
             Subscription::WorkspaceCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceCreated,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::WorkspaceClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceClosed,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::WorkspaceFocused {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceFocused,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::WorkspaceRenamed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceRenamed,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::TabCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabCreated,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::TabClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabClosed,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::TabFocused {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabFocused,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::TabRenamed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabRenamed,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::PaneCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneCreated,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::PaneClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneClosed,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::PaneFocused {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneFocused,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::PaneExited {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneExited,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::PaneAgentDetected {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneAgentDetected,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::LayoutChanged {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::LayoutChanged,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::TabReordered {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabReordered,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::WorkspaceReordered {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceReordered,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::PaneZoomed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneZoomed,
-                last_sequence: 0,
+                last_sequence: event_hub.current_sequence(),
             })),
             Subscription::PaneOutputMatched {
                 pane_id,
