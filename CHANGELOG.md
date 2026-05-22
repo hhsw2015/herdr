@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.0-cmux7] - 2026-05-22
+
+### Fixed
+- `workspace.create` and `pane.split` now resolve the spawn cwd through a `requested → $HOME → current_dir → /` fallback chain. Previously a caller-supplied path that didn't exist on the daemon's filesystem (e.g. cmux on macOS sending `/Users/<me>` to a Linux daemon) reached libghostty-vt and crashed the spawn with `ghostty error -2`. The fallback also covers the case where the `cwd` field is omitted and the daemon's own `current_dir` is `/` (`setsid -f script` startup) — instead of dying, we land in `$HOME` like an interactive shell would.
+
 ## [0.6.0-cmux6] - 2026-05-22
 
 ### Added

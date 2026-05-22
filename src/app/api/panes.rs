@@ -20,16 +20,26 @@ impl App {
             return pane_not_found(id, &params.target_pane_id);
         };
         let (rows, cols) = self.state.estimate_pane_size();
-        let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
-            self.state.workspaces.get(ws_idx).and_then(|ws| {
-                let tab_idx = ws.find_tab_index_for_pane(target_pane_id)?;
-                ws.tabs.get(tab_idx)?.cwd_for_pane(
-                    target_pane_id,
-                    &self.state.terminals,
-                    &self.terminal_runtimes,
-                )
-            })
+        // Caller-supplied cwd wins iff it's a real directory. Otherwise
+        // inherit from the target pane's cwd, then fall back through
+        // $HOME via resolve_spawn_cwd. Without the validation step a
+        // path that doesn't map onto our filesystem (e.g. macOS client
+        // sending `/Users/...` to a Linux daemon) reaches libghostty-vt
+        // and crashes the spawn with `ghostty error -2`.
+        let inherited_cwd = self.state.workspaces.get(ws_idx).and_then(|ws| {
+            let tab_idx = ws.find_tab_index_for_pane(target_pane_id)?;
+            ws.tabs.get(tab_idx)?.cwd_for_pane(
+                target_pane_id,
+                &self.state.terminals,
+                &self.terminal_runtimes,
+            )
         });
+        let requested_cwd = params
+            .cwd
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .or(inherited_cwd);
+        let split_cwd = Some(super::workspaces::resolve_spawn_cwd(requested_cwd));
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
