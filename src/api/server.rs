@@ -209,12 +209,34 @@ fn handle_connection(
                 let Some(response) = (match wait_result {
                     Ok(value) => value,
                     Err(err) => {
-                        // Log the failure so the request that opened
-                        // with api_request_started has a matching
-                        // terminal log instead of dangling — review
-                        // HIGH-7 of cmux 3c071dac.
+                        // Persistent connections must not die on a
+                        // single failed request. Convert IO/api error
+                        // into a JSON-RPC error envelope, log
+                        // api_request_failed, write the envelope, and
+                        // continue the outer loop so the next request
+                        // on this socket can still land. Only a write
+                        // failure (peer gone) below tears down the
+                        // connection. Replaces the prior hard
+                        // tear-down that came in via cmux #247
+                        // review HIGH-7 — see review MED-6 of
+                        // cmux 7bf29063.
                         crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        return Err(err);
+                        let envelope = ErrorResponse {
+                            id: request_id.clone(),
+                            error: ErrorBody {
+                                code: "wait_for_output_failed".into(),
+                                message: err.to_string(),
+                            },
+                        };
+                        if let Err(write_err) =
+                            write_json_line_allow_disconnect(&mut stream, &envelope)
+                        {
+                            if is_connection_closed_error(&write_err) {
+                                return Ok(());
+                            }
+                            return Err(write_err);
+                        }
+                        continue;
                     }
                 }) else {
                     crate::logging::api_request_completed(
@@ -225,19 +247,26 @@ fn handle_connection(
                     );
                     return Ok(());
                 };
-                let write_result = write_text_line_allow_disconnect(&mut stream, &response);
-                match &write_result {
-                    Ok(()) => crate::logging::api_request_completed(
-                        &request_id,
-                        method,
-                        api_response_outcome(&response),
-                        changes_ui,
-                    ),
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response) {
+                    if is_connection_closed_error(&err) {
+                        crate::logging::api_request_completed(
+                            &request_id,
+                            method,
+                            "client_disconnected",
+                            changes_ui,
+                        );
+                        return Ok(());
                     }
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string());
+                    return Err(err);
                 }
-                return write_result;
+                crate::logging::api_request_completed(
+                    &request_id,
+                    method,
+                    api_response_outcome(&response),
+                    changes_ui,
+                );
+                // Continue loop — same pattern as method_body branch.
             }
             method_body => {
                 let response = handle_request(

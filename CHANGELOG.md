@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.0-cmux11] - 2026-05-22
+
+### Fixed
+- `Method::PaneWaitForOutput` errors no longer tear down the persistent connection. The handler now writes a JSON error envelope (`code: "wait_for_output_failed"`) back to the client and continues the loop so subsequent RPCs on the same socket still land. The previous behaviour (return Err → close socket) defeated the entire persistent-connection rationale by forcing cmux to ssh-reconnect on a single transient pane error. Caught by review MED-6 of cmux 7bf29063.
+
 ## [0.6.0-cmux10] - 2026-05-22
 
 ### Fixed
