@@ -889,6 +889,9 @@ impl PaneRuntime {
     /// Subscribe to raw PTY bytes from this pane's master fd. Used by
     /// RawPty-encoded clients that want to bypass herdr's internal emulator.
     /// Slow consumers receive `RecvError::Lagged` and should resync.
+    /// Reachable via TerminalRuntime delegation; clippy can't see the
+    /// indirect call from the headless server attach path.
+    #[allow(dead_code)]
     pub fn subscribe_raw_pty(&self) -> broadcast::Receiver<Bytes> {
         self.raw_pty_tx.subscribe()
     }

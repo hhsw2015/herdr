@@ -164,6 +164,9 @@ impl PaneTerminal {
     /// current visible viewport as ANSI bytes — a single instant
     /// frame, not the historical byte stream that would otherwise
     /// re-animate the user's last drags / typing on every reattach.
+    /// Currently only used by raw_pty_history-driven replay; kept
+    /// for future ANSI-stream attach modes.
+    #[allow(dead_code)]
     pub fn snapshot_for_replay(&self) -> Vec<u8> {
         let visible = self.ghostty.visible_ansi();
         let mut out = Vec::with_capacity(visible.len() + 32);

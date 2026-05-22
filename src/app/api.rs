@@ -401,14 +401,15 @@ impl App {
                 // PaneResize, etc.) are dispatched here so they live in
                 // a separate file rather than polluting upstream's
                 // domain-split api modules.
-                return match self.dispatch_cmux_method(request.id.clone(), other) {
-                    Ok(response) => response,
-                    Err(_unmatched) => responses::encode_error(
-                        request.id,
-                        "not_implemented",
-                        "method not implemented yet",
-                    ),
-                };
+                return self
+                    .dispatch_cmux_method(request.id.clone(), other)
+                    .unwrap_or_else(|| {
+                        responses::encode_error(
+                            request.id,
+                            "not_implemented",
+                            "method not implemented yet",
+                        )
+                    });
             }
         };
 

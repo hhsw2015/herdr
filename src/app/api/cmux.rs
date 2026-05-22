@@ -329,20 +329,27 @@ impl App {
     /// `handle_api_request` match before falling through to
     /// not-implemented; returns Some(response) when a cmux handler
     /// was matched.
+    /// Returns Some(response) when a cmux-only method matched.
+    /// Returns None for any other method so the caller can fall through
+    /// to upstream's not-implemented response. Unmatched method is
+    /// dropped — caller doesn't need it back, and returning it inflates
+    /// the Result enum past clippy's result-large-err threshold.
     pub(super) fn dispatch_cmux_method(
         &mut self,
         id: String,
         method: Method,
-    ) -> Result<String, Method> {
+    ) -> Option<String> {
         match method {
-            Method::PaneResize(params) => Ok(self.handle_pane_resize(id, params)),
-            Method::LayoutSnapshot(params) => Ok(self.handle_layout_snapshot(id, params)),
-            Method::PaneSetSplitRatio(params) => Ok(self.handle_pane_set_split_ratio(id, params)),
-            Method::PaneSwap(params) => Ok(self.handle_pane_swap(id, params)),
-            Method::PaneFocus(target) => Ok(self.handle_pane_focus(id, target)),
-            Method::PaneSetZoom(params) => Ok(self.handle_pane_set_zoom(id, params)),
-            Method::TabReorder(params) => Ok(self.handle_tab_reorder(id, params)),
-            other => Err(other),
+            Method::PaneResize(params) => Some(self.handle_pane_resize(id, params)),
+            Method::LayoutSnapshot(params) => Some(self.handle_layout_snapshot(id, params)),
+            Method::PaneSetSplitRatio(params) => {
+                Some(self.handle_pane_set_split_ratio(id, params))
+            }
+            Method::PaneSwap(params) => Some(self.handle_pane_swap(id, params)),
+            Method::PaneFocus(target) => Some(self.handle_pane_focus(id, target)),
+            Method::PaneSetZoom(params) => Some(self.handle_pane_set_zoom(id, params)),
+            Method::TabReorder(params) => Some(self.handle_tab_reorder(id, params)),
+            _ => None,
         }
     }
 }
