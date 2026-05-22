@@ -1200,10 +1200,25 @@ impl AppState {
     }
 
     pub fn estimate_pane_size(&self) -> (u16, u16) {
-        if let Some(info) = self.view.pane_infos.first() {
-            (info.rect.height, info.rect.width)
-        } else {
+        // Headless API clients (cmux, scripts) drive split/tab/create
+        // before any TUI client has rendered, so view.pane_infos can be
+        // populated with a zero-sized rect. libghostty-vt rejects 0x0
+        // with `ghostty error -2`, so clamp to a sane fallback that
+        // still lets the shell start; cmux's panel resize observer
+        // re-syncs the real geometry as soon as the panel mounts.
+        let (rows, cols) = self
+            .view
+            .pane_infos
+            .first()
+            .map(|info| (info.rect.height, info.rect.width))
+            .unwrap_or((24, 80));
+        // Either axis being 0 means there's a placeholder pane_info
+        // without real geometry yet — fall back to the same sane
+        // default we use for the truly empty case.
+        if rows == 0 || cols == 0 {
             (24, 80)
+        } else {
+            (rows, cols)
         }
     }
 

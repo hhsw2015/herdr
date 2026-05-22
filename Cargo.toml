@@ -1,6 +1,6 @@
 [package]
 name = "herdr"
-version = "0.6.0-cmux7"
+version = "0.6.0-cmux8"
 edition = "2021"
 build = "build.rs"
 description = "terminal workspace manager for AI coding agents"

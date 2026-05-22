@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.0-cmux8] - 2026-05-22
+
+### Fixed
+- `pane.split`, `tab.create`, and other handlers that reuse `App::estimate_pane_size()` now clamp a zero-sized first pane back to the 24x80 fallback. Headless API clients (cmux, scripts) drive these RPCs before any TUI client has rendered, so `view.pane_infos.first()` could expose a 0x0 placeholder; sending that to libghostty-vt produced `ghostty error -2`. A panel-side `pane.resize` is still emitted as soon as the surface mounts.
+
 ## [0.6.0-cmux7] - 2026-05-22
 
 ### Fixed
