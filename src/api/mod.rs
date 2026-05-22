@@ -894,7 +894,7 @@ impl ActiveSubscription {
                     return Ok(Self::Event(ActiveEventSubscription {
                         event_kind:
                             crate::api::schema::EventKind::PaneAgentStatusChanged,
-                        last_sequence: 0,
+                        last_sequence: event_hub.current_sequence(),
                     }));
                 };
                 let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pane_id, api_tx)?;
