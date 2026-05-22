@@ -213,11 +213,7 @@ fn handle_connection(
                         // with api_request_started has a matching
                         // terminal log instead of dangling — review
                         // HIGH-7 of cmux 3c071dac.
-                        crate::logging::api_request_failed(
-                            &request_id,
-                            method,
-                            &err.to_string(),
-                        );
+                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
                         return Err(err);
                     }
                 }) else {
