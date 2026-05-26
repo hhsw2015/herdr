@@ -128,10 +128,14 @@ pub enum RawInputEvent {
     Unsupported,
 }
 
-pub(crate) fn events_require_host_surface_redraw(events: &[RawInputEvent]) -> bool {
-    events
-        .iter()
-        .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
+pub(crate) fn events_require_host_surface_redraw(
+    events: &[RawInputEvent],
+    redraw_on_focus_gained: bool,
+) -> bool {
+    redraw_on_focus_gained
+        && events
+            .iter()
+            .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
 }
 
 pub fn spawn_input_reader() -> mpsc::Receiver<RawInputEvent> {
@@ -228,6 +232,11 @@ pub(crate) fn flush_incomplete_input_bytes(buffer: &mut Vec<u8>) -> Option<Vec<u
 
     if starts_with_incomplete_utf8_char(buffer) {
         tracing::trace!(bytes = ?buffer, "waiting for UTF-8 continuation bytes");
+        return None;
+    }
+
+    if buffer.first() == Some(&ESC) && starts_with_incomplete_utf8_char(&buffer[1..]) {
+        tracing::trace!(bytes = ?buffer, "waiting for escaped UTF-8 continuation bytes");
         return None;
     }
 
@@ -388,7 +397,12 @@ fn complete_escape_sequence_len(buffer: &[u8]) -> Option<usize> {
         return (buffer.len() >= 3).then_some(3);
     }
 
-    Some(2)
+    let escaped_char_width = utf8_char_width(buffer[1])?;
+    if buffer.len() < 1 + escaped_char_width {
+        return None;
+    }
+    std::str::from_utf8(&buffer[1..1 + escaped_char_width]).ok()?;
+    Some(1 + escaped_char_width)
 }
 
 fn find_osc_terminator(buffer: &[u8]) -> Option<usize> {
@@ -657,10 +671,11 @@ mod tests {
     #[test]
     fn outer_focus_gained_requests_host_surface_redraw() {
         let events = parse_raw_input_bytes_sync(b"\x1b[I");
-        assert!(events_require_host_surface_redraw(&events));
+        assert!(events_require_host_surface_redraw(&events, true));
+        assert!(!events_require_host_surface_redraw(&events, false));
 
         let events = parse_raw_input_bytes_sync(b"\x1b[O");
-        assert!(!events_require_host_surface_redraw(&events));
+        assert!(!events_require_host_surface_redraw(&events, true));
     }
 
     #[test]
@@ -1043,6 +1058,41 @@ mod tests {
         let chunks = drain_complete_input_bytes(&mut buffer);
         assert_eq!(chunks, vec!["好".as_bytes().to_vec()]);
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn alt_utf8_char_drains_as_one_event_before_following_input() {
+        let events = parse_raw_input_bytes_sync("\x1béx".as_bytes());
+        assert_eq!(events.len(), 2);
+        assert_raw_key(
+            events.into_iter().next().unwrap(),
+            KeyCode::Char('é'),
+            KeyModifiers::ALT,
+        );
+    }
+
+    #[test]
+    fn chunked_alt_utf8_waits_for_continuation_byte_after_escape() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut buffer = Vec::new();
+        let bytes = "\x1bé".as_bytes();
+
+        drain_chunk(&mut buffer, &tx, &bytes[..2]);
+        assert_eq!(buffer, bytes[..2]);
+        assert!(collect_events(&mut rx).is_empty());
+        flush_incomplete_buffer(&mut buffer, &tx);
+        assert_eq!(buffer, bytes[..2]);
+        assert!(collect_events(&mut rx).is_empty());
+
+        drain_chunk(&mut buffer, &tx, &bytes[2..]);
+        assert!(buffer.is_empty());
+        let events = collect_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_raw_key(
+            events.into_iter().next().unwrap(),
+            KeyCode::Char('é'),
+            KeyModifiers::ALT,
+        );
     }
 
     #[test]

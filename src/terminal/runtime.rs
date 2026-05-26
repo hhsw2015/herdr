@@ -19,6 +19,61 @@ impl TerminalRuntime {
         self.0.shutdown();
     }
 
+    #[cfg(unix)]
+    pub fn duplicate_handoff_fd(&self) -> std::io::Result<std::os::fd::RawFd> {
+        self.0.duplicate_handoff_fd()
+    }
+
+    #[cfg(unix)]
+    pub fn preserve_for_handoff(self) {
+        self.0.preserve_for_handoff()
+    }
+
+    #[cfg(unix)]
+    pub fn assume_handoff_ownership(&mut self) {
+        self.0.assume_handoff_ownership();
+    }
+
+    #[cfg(unix)]
+    pub fn set_handoff_reader_paused(&self, paused: bool) {
+        self.0.set_handoff_reader_paused(paused);
+    }
+
+    #[cfg(unix)]
+    pub fn pause_handoff_reader(&self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.0.pause_handoff_reader(timeout)
+    }
+
+    #[cfg(unix)]
+    pub fn handoff_pane(&self, pane_id: u32) -> crate::server::handoff::HandoffPane {
+        self.0.handoff_pane(pane_id)
+    }
+
+    #[cfg(unix)]
+    pub fn handoff_history_ansi(&self) -> Option<String> {
+        self.0.handoff_history_ansi()
+    }
+
+    #[cfg(unix)]
+    pub fn from_handoff_fd(
+        import: crate::pane::PaneRuntimeImport,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<AtomicBool>,
+    ) -> std::io::Result<Self> {
+        crate::pane::PaneRuntime::from_handoff_fd(
+            import,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            events,
+            render_notify,
+            render_dirty,
+        )
+        .map(Self)
+    }
+
     pub fn spawn(
         pane_id: PaneId,
         rows: u16,
@@ -39,6 +94,35 @@ impl TerminalRuntime {
             scrollback_limit_bytes,
             host_terminal_theme,
             default_shell,
+            events,
+            render_notify,
+            render_dirty,
+        )
+        .map(Self)
+    }
+
+    pub fn spawn_with_initial_history(
+        pane_id: PaneId,
+        rows: u16,
+        cols: u16,
+        cwd: std::path::PathBuf,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        default_shell: &str,
+        initial_history_ansi: Option<&str>,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<AtomicBool>,
+    ) -> std::io::Result<Self> {
+        crate::pane::PaneRuntime::spawn_with_initial_history(
+            pane_id,
+            rows,
+            cols,
+            cwd,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            default_shell,
+            initial_history_ansi,
             events,
             render_notify,
             render_dirty,
@@ -102,6 +186,33 @@ impl TerminalRuntime {
         .map(Self)
     }
 
+    pub fn spawn_agent_restore(
+        pane_id: PaneId,
+        rows: u16,
+        cols: u16,
+        cwd: std::path::PathBuf,
+        launch: crate::agent_resume::AgentResumeLaunch<'_>,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<AtomicBool>,
+    ) -> std::io::Result<Self> {
+        crate::pane::PaneRuntime::spawn_agent_restore(
+            pane_id,
+            rows,
+            cols,
+            cwd,
+            launch,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            events,
+            render_notify,
+            render_dirty,
+        )
+        .map(Self)
+    }
+
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         self.0.apply_host_terminal_theme(theme);
     }
@@ -132,6 +243,10 @@ impl TerminalRuntime {
     #[cfg(test)]
     pub(crate) fn from_pane_runtime(runtime: crate::pane::PaneRuntime) -> Self {
         Self(runtime)
+    }
+
+    pub fn nudge_child_redraw_after_handoff(&self) {
+        self.0.nudge_child_redraw_after_handoff();
     }
 
     pub fn scroll_up(&self, lines: usize) {
@@ -188,6 +303,10 @@ impl TerminalRuntime {
 
     pub fn recent_unwrapped_ansi(&self, lines: usize) -> String {
         self.0.recent_unwrapped_ansi(lines)
+    }
+
+    pub fn snapshot_history(&self) -> Option<String> {
+        self.0.snapshot_history()
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {

@@ -9,6 +9,7 @@ mod dialogs;
 mod keybind_help;
 mod menus;
 mod mobile;
+mod navigator;
 mod onboarding;
 mod panes;
 mod release_notes;
@@ -33,6 +34,7 @@ use self::mobile::{
     mobile_toast_banner_rect, render_mobile_header, render_mobile_panel,
     render_mobile_toast_banner,
 };
+use self::navigator::render_navigator_overlay;
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
 use self::onboarding::render_onboarding_overlay;
 use self::panes::{compute_pane_infos, render_panes, resize_tab_panes};
@@ -354,7 +356,7 @@ pub fn render_with_runtime_registry(
     let terminal_area = app.view.terminal_area;
 
     if app.view.layout == ViewLayout::Mobile {
-        render_mobile_header(app, frame, app.view.mobile_header_rect);
+        render_mobile_header(app, terminal_runtimes, frame, app.view.mobile_header_rect);
     } else if app.sidebar_collapsed {
         render_sidebar_collapsed(app, frame, sidebar_area);
     } else {
@@ -373,7 +375,7 @@ pub fn render_with_runtime_registry(
         Mode::ReleaseNotes => render_release_notes_overlay(app, frame, frame.area()),
         Mode::ProductAnnouncement => render_product_announcement_overlay(app, frame, frame.area()),
         Mode::Navigate if app.view.layout == ViewLayout::Mobile => {
-            render_mobile_panel(app, frame, frame.area())
+            render_mobile_panel(app, terminal_runtimes, frame, frame.area())
         }
         Mode::Navigate => render_navigate_overlay(app, frame, terminal_area),
         Mode::Prefix => render_prefix_overlay(app, frame, terminal_area),
@@ -393,6 +395,7 @@ pub fn render_with_runtime_registry(
         Mode::ConfirmRemoveWorktree => render_remove_worktree_overlay(app, frame, frame.area()),
         Mode::GlobalMenu => render_global_launcher_menu(app, frame),
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
+        Mode::Navigator => render_navigator_overlay(app, frame),
         Mode::Terminal => {}
     }
 }

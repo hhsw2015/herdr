@@ -12,7 +12,8 @@ Most commands print JSON responses. Use them from scripts when you want determin
 ```bash
 herdr                         # launch or attach to the default session
 herdr --session work          # launch or attach to a named session
-herdr --remote workbox        # attach through SSH
+herdr --remote workbox        # attach through SSH, using local keybindings
+herdr --remote workbox --remote-keybindings server
 herdr --no-session            # single-process escape hatch
 herdr --default-config        # print default config
 herdr update                  # download and install the latest version
@@ -64,6 +65,19 @@ Create a workspace without stealing focus:
 ```bash
 herdr workspace create --cwd ~/project --label api --no-focus
 ```
+
+## Worktrees
+
+```bash
+herdr worktree list [--workspace ID | --cwd PATH] [--json]
+herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]
+herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]
+herdr worktree remove --workspace ID [--force] [--json]
+```
+
+Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`.
+
+`workspace close` closes Herdr state only. `worktree remove` is the explicit checkout deletion path; it runs `git worktree remove`, never deletes the branch, and requires `--force` when Git refuses a dirty checkout.
 
 ## Tabs
 
@@ -164,11 +178,13 @@ Use `wait output` for normal commands and servers. Use `wait agent-status` for c
 
 ```bash
 herdr integration install pi
+herdr integration install omp
 herdr integration install claude
 herdr integration install codex
 herdr integration install opencode
 herdr integration install hermes
 herdr integration uninstall pi
+herdr integration uninstall omp
 herdr integration uninstall claude
 herdr integration uninstall codex
 herdr integration uninstall opencode

@@ -8,6 +8,7 @@ mod panes;
 mod responses;
 mod tabs;
 mod workspaces;
+mod worktrees;
 
 use super::{api_helpers::pane_agent_status, App, Mode, OverlayPaneState, ToastKind};
 use crate::events::AppEvent;
@@ -322,8 +323,17 @@ impl App {
     }
 
     pub(crate) fn handle_api_request(&mut self, request: crate::api::schema::Request) -> String {
-        self.drain_internal_events();
-        use crate::api::schema::{Method, ResponseResult, SuccessResponse};
+        self.drain_all_internal_events();
+        self.handle_api_request_after_internal_events_drained(request)
+    }
+
+    pub(crate) fn handle_api_request_after_internal_events_drained(
+        &mut self,
+        request: crate::api::schema::Request,
+    ) -> String {
+        use crate::api::schema::{
+            ErrorBody, ErrorResponse, Method, ResponseResult, SuccessResponse,
+        };
 
         let response = match request.method {
             Method::ServerStop(_) => {
@@ -332,6 +342,16 @@ impl App {
                     id: request.id,
                     result: ResponseResult::Ok {},
                 }
+            }
+            Method::ServerLiveHandoff(_) => {
+                let response = ErrorResponse {
+                    id: request.id,
+                    error: ErrorBody {
+                        code: "unsupported_in_app_mode".into(),
+                        message: "live handoff is only supported by the headless server".into(),
+                    },
+                };
+                return serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
             }
             Method::ServerReloadConfig(_) => {
                 let report = self.reload_config();
@@ -356,6 +376,14 @@ impl App {
             }
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target)
+            }
+            Method::WorktreeList(params) => return self.handle_worktree_list(request.id, params),
+            Method::WorktreeCreate(params) => {
+                return self.handle_worktree_create(request.id, params);
+            }
+            Method::WorktreeOpen(params) => return self.handle_worktree_open(request.id, params),
+            Method::WorktreeRemove(params) => {
+                return self.handle_worktree_remove(request.id, params);
             }
             Method::TabList(params) => return self.handle_tab_list(request.id, params),
             Method::TabGet(target) => return self.handle_tab_get(request.id, target),

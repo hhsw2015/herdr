@@ -49,6 +49,7 @@ pub(super) struct ActiveAgentStatusChangedSubscription {
     pane_id: String,
     status_filter: Option<crate::api::schema::AgentStatus>,
     last_status: Option<crate::api::schema::AgentStatus>,
+    emit_initial_match: bool,
     request_prefix: String,
 }
 
@@ -80,6 +81,14 @@ impl ActiveSubscription {
             Subscription::WorkspaceCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceCreated,
                 last_sequence,
+            })),
+            Subscription::WorkspaceUpdated {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorkspaceUpdated,
+                last_sequence: 0,
+            })),
+            Subscription::WorkspaceRenamed {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorkspaceRenamed,
+                last_sequence: 0,
             })),
             Subscription::WorkspaceClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceClosed,
@@ -193,21 +202,16 @@ impl ActiveSubscription {
                 pane_id,
                 agent_status,
             } => {
-                // Global subscription (pane_id=None) wants every
-                // pane-agent-status change broadcast across the daemon.
-                // Per-pane subscription polls a specific pane via
-                // pane.get. The two paths are different on purpose:
-                // global routes through EventHub so cmux can mirror the
-                // sidebar without enumerating panes up front; per-pane
-                // polls so the CLI agent-watch can return on first
-                // matching status.
                 if let Some(pid) = pane_id {
                     let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pid, api_tx)?;
+                    let emit_initial_match =
+                        agent_status.is_some_and(|wanted| wanted == probe.agent_status);
                     Ok(Self::AgentStatusChanged(
                         ActiveAgentStatusChangedSubscription {
                             pane_id: pid,
                             status_filter: agent_status,
                             last_status: Some(probe.agent_status),
+                            emit_initial_match,
                             request_prefix: format!("{request_id}:sub:{index}"),
                         },
                     ))
@@ -296,13 +300,17 @@ impl ActiveAgentStatusChangedSubscription {
         .ok()?;
         let current_status = pane.agent_status;
         let previous_status = self.last_status.replace(current_status);
-        if previous_status.is_none() || previous_status == Some(current_status) {
-            return None;
-        }
-        if self
-            .status_filter
-            .is_some_and(|wanted| wanted != current_status)
-        {
+        let should_emit = if self.emit_initial_match {
+            self.emit_initial_match = false;
+            self.status_filter
+                .is_some_and(|wanted| wanted == current_status)
+        } else {
+            previous_status.is_some_and(|previous| previous != current_status)
+                && !self
+                    .status_filter
+                    .is_some_and(|wanted| wanted != current_status)
+        };
+        if !should_emit {
             return None;
         }
 

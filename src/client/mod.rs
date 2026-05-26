@@ -23,16 +23,17 @@ use std::time::Duration;
 
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    EnableFocusChange, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use tracing::{debug, info, warn};
 
 use crate::protocol::render_ansi;
 use crate::protocol::{
-    self, ClientKeybindings, ClientMessage, NotifyKind, RenderEncoding, ServerMessage,
-    MAX_CLIPBOARD_IMAGE_PAYLOAD, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
+    self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientMessage, NotifyKind,
+    RenderEncoding, ServerMessage, MAX_CLIPBOARD_IMAGE_PAYLOAD, MAX_FRAME_SIZE,
+    MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
 };
 use crate::server::socket_paths::client_socket_path;
 
@@ -56,6 +57,10 @@ struct ClientState {
     kitty_graphics_enabled: bool,
     /// Direct attach prefix escape state. None for full-app clients.
     attach_escape: Option<AttachEscapeState>,
+    /// Rows scrolled for one direct-attach wheel notch.
+    mouse_scroll_lines: usize,
+    /// Whether outer focus gain should force a full host-terminal redraw.
+    redraw_on_focus_gained: bool,
 }
 
 #[derive(Debug, Default)]
@@ -66,12 +71,25 @@ struct AttachEscapeState {
 #[derive(Debug)]
 enum AttachInputAction {
     Forward(Vec<u8>),
+    Scroll {
+        source: AttachScrollSource,
+        direction: AttachScrollDirection,
+        lines: u16,
+        column: Option<u16>,
+        row: Option<u16>,
+        modifiers: u8,
+    },
     Detach,
     None,
 }
 
 impl AttachEscapeState {
-    fn filter_input(&mut self, data: Vec<u8>) -> AttachInputAction {
+    fn filter_input(
+        &mut self,
+        data: Vec<u8>,
+        viewport_rows: u16,
+        mouse_scroll_lines: usize,
+    ) -> AttachInputAction {
         const PREFIX: u8 = 0x02; // Ctrl+B
 
         let mut output = Vec::with_capacity(data.len());
@@ -98,9 +116,70 @@ impl AttachEscapeState {
 
         if output.is_empty() {
             AttachInputAction::None
+        } else if let Some(action) =
+            attach_scroll_action(&output, viewport_rows, mouse_scroll_lines)
+        {
+            action
         } else {
             AttachInputAction::Forward(output)
         }
+    }
+}
+
+fn attach_scroll_action(
+    data: &[u8],
+    viewport_rows: u16,
+    mouse_scroll_lines: usize,
+) -> Option<AttachInputAction> {
+    let mut events = crate::raw_input::parse_raw_input_bytes_sync(data);
+    if events.len() != 1 {
+        return None;
+    }
+
+    match events.pop()? {
+        crate::raw_input::RawInputEvent::Mouse(mouse) => {
+            let direction = match mouse.kind {
+                MouseEventKind::ScrollUp => AttachScrollDirection::Up,
+                MouseEventKind::ScrollDown => AttachScrollDirection::Down,
+                _ => return Some(AttachInputAction::None),
+            };
+            Some(AttachInputAction::Scroll {
+                source: AttachScrollSource::Wheel,
+                direction,
+                lines: mouse_scroll_lines.max(1).min(u16::MAX as usize) as u16,
+                column: Some(mouse.column),
+                row: Some(mouse.row),
+                modifiers: mouse.modifiers.bits(),
+            })
+        }
+        crate::raw_input::RawInputEvent::Key(key)
+            if key.modifiers.is_empty()
+                && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+        {
+            let direction = match key.code {
+                KeyCode::PageUp => AttachScrollDirection::Up,
+                KeyCode::PageDown => AttachScrollDirection::Down,
+                _ => return None,
+            };
+            Some(AttachInputAction::Scroll {
+                source: AttachScrollSource::PageKey {
+                    input: data.to_vec(),
+                },
+                direction,
+                lines: viewport_rows.saturating_sub(1).max(1),
+                column: None,
+                row: None,
+                modifiers: KeyModifiers::empty().bits(),
+            })
+        }
+        crate::raw_input::RawInputEvent::Key(key)
+            if key.modifiers.is_empty()
+                && key.kind == KeyEventKind::Release
+                && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) =>
+        {
+            Some(AttachInputAction::None)
+        }
+        _ => None,
     }
 }
 
@@ -210,10 +289,11 @@ fn setup_terminal(mouse_capture: bool) -> io::Result<TerminalGuard> {
 
 /// Sets up a direct attach terminal.
 ///
-/// Direct attach forwards stdin to the attached PTY, so it must not enable
-/// outer-terminal protocols that generate local responses or mouse reports.
+/// Direct attach forwards stdin to the attached PTY. It enables mouse capture
+/// so wheel events can drive the attached viewport or be forwarded to child
+/// programs that requested mouse input.
 fn setup_direct_attach_terminal() -> io::Result<TerminalGuard> {
-    setup_terminal_with_capabilities(false, false)
+    setup_terminal_with_capabilities(false, true)
 }
 
 fn setup_terminal_with_capabilities(
@@ -234,6 +314,8 @@ fn setup_terminal_with_capabilities(
             EnableFocusChange,
             PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
         )?;
+    } else if mouse_capture {
+        execute!(io::stdout(), EnableMouseCapture)?;
     } else {
         execute!(io::stdout(), DisableMouseCapture)?;
     }
@@ -548,6 +630,8 @@ fn run_client_with_mode(
     init_logging();
 
     let loaded_config = crate::config::Config::load();
+    let mouse_scroll_lines = loaded_config.config.ui.mouse_scroll_lines();
+    let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
     let sound_config = loaded_config.config.ui.sound;
     let direct_attach_requested = attach_request.is_some();
     let kitty_graphics_enabled =
@@ -641,6 +725,8 @@ fn run_client_with_mode(
             rows,
             should_quit,
             sound_config,
+            mouse_scroll_lines,
+            redraw_on_focus_gained,
             kitty_graphics_enabled,
             false,
             negotiated_encoding,
@@ -687,6 +773,8 @@ async fn run_client_loop(
     rows: u16,
     should_quit: Arc<AtomicBool>,
     sound_config: crate::config::SoundConfig,
+    mouse_scroll_lines: usize,
+    redraw_on_focus_gained: bool,
     kitty_graphics_enabled: bool,
     mouse_capture_active: bool,
     negotiated_encoding: RenderEncoding,
@@ -699,6 +787,8 @@ async fn run_client_loop(
         sound_config,
         kitty_graphics_enabled,
         attach_escape,
+        mouse_scroll_lines,
+        redraw_on_focus_gained,
     };
     debug!(?negotiated_encoding, "client render encoding active");
 
@@ -759,8 +849,33 @@ async fn run_client_loop(
         match event {
             ClientLoopEvent::StdinInput(data) => {
                 let data = if let Some(attach_escape) = &mut state.attach_escape {
-                    match attach_escape.filter_input(data) {
+                    match attach_escape.filter_input(
+                        data,
+                        state.reported_size.1,
+                        state.mouse_scroll_lines,
+                    ) {
                         AttachInputAction::Forward(data) => data,
+                        AttachInputAction::Scroll {
+                            source,
+                            direction,
+                            lines,
+                            column,
+                            row,
+                            modifiers,
+                        } => {
+                            let msg = ClientMessage::AttachScroll {
+                                source,
+                                direction,
+                                lines,
+                                column,
+                                row,
+                                modifiers,
+                            };
+                            if let Err(e) = write_to_server(&mut write_stream, &msg) {
+                                return Err(ClientError::ConnectionLost(e));
+                            }
+                            continue;
+                        }
                         AttachInputAction::Detach => {
                             let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
                             return Ok(());
@@ -769,7 +884,10 @@ async fn run_client_loop(
                     }
                 } else {
                     let events = crate::raw_input::parse_raw_input_bytes_sync(&data);
-                    if crate::raw_input::events_require_host_surface_redraw(&events) {
+                    if crate::raw_input::events_require_host_surface_redraw(
+                        &events,
+                        state.redraw_on_focus_gained,
+                    ) {
                         state.request_full_redraw();
                     }
                     data
@@ -860,7 +978,10 @@ async fn run_client_loop(
                     let _ = io::stdout().flush();
                 }
                 ServerMessage::ReloadSoundConfig => {
-                    reload_local_sound_config(&mut state.sound_config);
+                    reload_local_client_config(
+                        &mut state.sound_config,
+                        &mut state.redraw_on_focus_gained,
+                    );
                 }
                 ServerMessage::MouseCapture { enabled } => {
                     let desired = enabled;
@@ -966,17 +1087,21 @@ fn write_to_server(stream: &mut UnixStream, msg: &ClientMessage) -> io::Result<(
 // Notifications
 // ---------------------------------------------------------------------------
 
-fn reload_local_sound_config(sound_config: &mut crate::config::SoundConfig) {
+fn reload_local_client_config(
+    sound_config: &mut crate::config::SoundConfig,
+    redraw_on_focus_gained: &mut bool,
+) {
     match crate::config::load_live_config() {
         Ok(loaded) => {
             for diagnostic in loaded.config.ui.sound.diagnostics() {
                 warn!(diagnostic = %diagnostic, "local sound config diagnostic");
             }
             *sound_config = loaded.config.ui.sound;
-            debug!("reloaded local sound config");
+            *redraw_on_focus_gained = loaded.config.ui.redraw_on_focus_gained;
+            debug!("reloaded local client config");
         }
         Err(diagnostics) => {
-            warn!(diagnostics = ?diagnostics, "failed to reload local sound config; keeping current sound config");
+            warn!(diagnostics = ?diagnostics, "failed to reload local client config; keeping current client config");
         }
     }
 }
@@ -1389,11 +1514,11 @@ mod tests {
     fn attach_escape_detaches_on_prefix_q() {
         let mut escape = AttachEscapeState::default();
         assert!(matches!(
-            escape.filter_input(vec![0x02]),
+            escape.filter_input(vec![0x02], 24, 3),
             AttachInputAction::None
         ));
         assert!(matches!(
-            escape.filter_input(vec![b'q']),
+            escape.filter_input(vec![b'q'], 24, 3),
             AttachInputAction::Detach
         ));
     }
@@ -1402,10 +1527,10 @@ mod tests {
     fn attach_escape_sends_literal_prefix_on_double_prefix() {
         let mut escape = AttachEscapeState::default();
         assert!(matches!(
-            escape.filter_input(vec![0x02]),
+            escape.filter_input(vec![0x02], 24, 3),
             AttachInputAction::None
         ));
-        match escape.filter_input(vec![0x02]) {
+        match escape.filter_input(vec![0x02], 24, 3) {
             AttachInputAction::Forward(bytes) => assert_eq!(bytes, vec![0x02]),
             other => panic!("expected forwarded prefix, got {other:?}"),
         }
@@ -1415,12 +1540,94 @@ mod tests {
     fn attach_escape_forwards_prefix_before_non_escape_key() {
         let mut escape = AttachEscapeState::default();
         assert!(matches!(
-            escape.filter_input(vec![b'a', 0x02]),
+            escape.filter_input(vec![b'a', 0x02], 24, 3),
             AttachInputAction::Forward(bytes) if bytes == b"a"
         ));
-        match escape.filter_input(vec![b'x']) {
+        match escape.filter_input(vec![b'x'], 24, 3) {
             AttachInputAction::Forward(bytes) => assert_eq!(bytes, vec![0x02, b'x']),
             other => panic!("expected forwarded bytes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_escape_turns_wheel_into_scroll_action() {
+        let mut escape = AttachEscapeState::default();
+        match escape.filter_input(b"\x1b[<64;11;6M".to_vec(), 24, 7) {
+            AttachInputAction::Scroll {
+                source,
+                direction,
+                lines,
+                column,
+                row,
+                ..
+            } => {
+                assert_eq!(source, AttachScrollSource::Wheel);
+                assert_eq!(direction, AttachScrollDirection::Up);
+                assert_eq!(lines, 7);
+                assert_eq!(column, Some(10));
+                assert_eq!(row, Some(5));
+            }
+            other => panic!("expected scroll action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_escape_swallows_non_wheel_mouse_reports() {
+        let mut escape = AttachEscapeState::default();
+        assert!(matches!(
+            escape.filter_input(b"\x1b[<0;11;6M".to_vec(), 24, 7),
+            AttachInputAction::None
+        ));
+    }
+
+    #[test]
+    fn attach_escape_turns_plain_page_keys_into_scroll_actions() {
+        let mut escape = AttachEscapeState::default();
+        match escape.filter_input(b"\x1b[5~".to_vec(), 12, 3) {
+            AttachInputAction::Scroll {
+                source,
+                direction,
+                lines,
+                ..
+            } => {
+                assert_eq!(
+                    source,
+                    AttachScrollSource::PageKey {
+                        input: b"\x1b[5~".to_vec()
+                    }
+                );
+                assert_eq!(direction, AttachScrollDirection::Up);
+                assert_eq!(lines, 11);
+            }
+            other => panic!("expected page-up scroll action, got {other:?}"),
+        }
+
+        match escape.filter_input(b"\x1b[6~".to_vec(), 12, 3) {
+            AttachInputAction::Scroll {
+                source,
+                direction,
+                lines,
+                ..
+            } => {
+                assert_eq!(
+                    source,
+                    AttachScrollSource::PageKey {
+                        input: b"\x1b[6~".to_vec()
+                    }
+                );
+                assert_eq!(direction, AttachScrollDirection::Down);
+                assert_eq!(lines, 11);
+            }
+            other => panic!("expected page-down scroll action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_escape_forwards_modified_page_key() {
+        let mut escape = AttachEscapeState::default();
+        match escape.filter_input(b"\x1b[5;5~".to_vec(), 12, 3) {
+            AttachInputAction::Forward(bytes) => assert_eq!(bytes, b"\x1b[5;5~"),
+            other => panic!("expected modified page key to forward, got {other:?}"),
         }
     }
 
@@ -1558,6 +1765,29 @@ mod tests {
     #[test]
     fn sound_from_notify_message_rejects_unknown_payloads() {
         assert_eq!(sound_from_notify_message("toast"), None);
+    }
+
+    #[test]
+    fn reload_local_client_config_refreshes_redraw_on_focus_gained() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "herdr-client-config-reload-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "[ui]\nredraw_on_focus_gained = false\n").unwrap();
+        let path_string = path.to_string_lossy().to_string();
+        let _env = EnvVarGuard::set(crate::config::CONFIG_PATH_ENV_VAR, &path_string);
+        let mut sound_config = crate::config::SoundConfig::default();
+        let mut redraw_on_focus_gained = true;
+
+        reload_local_client_config(&mut sound_config, &mut redraw_on_focus_gained);
+
+        assert!(!redraw_on_focus_gained);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

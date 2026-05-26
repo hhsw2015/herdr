@@ -39,11 +39,45 @@ pub struct ToastConfig {
     pub delivery: ToastDelivery,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum NewTerminalCwdConfig {
+    #[default]
+    Follow,
+    Home,
+    Current,
+    Path(String),
+}
+
+impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.trim() {
+            "" | "follow" => Ok(Self::Follow),
+            "home" => Ok(Self::Home),
+            "current" => Ok(Self::Current),
+            _ => Ok(Self::Path(value)),
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct TerminalConfig {
     /// Executable used for new interactive panes. Empty means SHELL, then /bin/sh.
     pub default_shell: String,
+    /// CWD policy for new interactive panes, tabs, and workspaces.
+    pub new_cwd: NewTerminalCwdConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SessionConfig {
+    /// Resume supported AI-agent panes into their native conversation sessions
+    /// when restoring a Herdr session. Default: false.
+    pub resume_agents_on_restore: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -79,6 +113,7 @@ pub struct Config {
     pub onboarding: Option<bool>,
     pub theme: ThemeConfig,
     pub terminal: TerminalConfig,
+    pub session: SessionConfig,
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
@@ -116,6 +151,20 @@ pub struct KeysConfig {
     pub close_workspace: BindingConfig,
     /// Open the workspace navigation surface. Default: "prefix+w"
     pub workspace_picker: BindingConfig,
+    /// Open the session navigator. Default: "prefix+g"
+    pub goto: BindingConfig,
+    /// Move workspace selection up in navigate mode. Default: "up".
+    pub navigate_workspace_up: BindingConfig,
+    /// Move workspace selection down in navigate mode. Default: "down".
+    pub navigate_workspace_down: BindingConfig,
+    /// Focus the pane to the left in navigate mode. Default: "h". Left arrow is always an alias.
+    pub navigate_pane_left: BindingConfig,
+    /// Focus the pane below in navigate mode. Default: "j".
+    pub navigate_pane_down: BindingConfig,
+    /// Focus the pane above in navigate mode. Default: "k".
+    pub navigate_pane_up: BindingConfig,
+    /// Focus the pane to the right in navigate mode. Default: "l". Right arrow is always an alias.
+    pub navigate_pane_right: BindingConfig,
     /// Detach from server/client mode, or exit --no-session mode. Default: "prefix+q".
     pub detach: BindingConfig,
     /// Reload config.toml in the running app/server. Default: "prefix+shift+r".
@@ -210,6 +259,8 @@ pub struct UiConfig {
     pub sidebar_max_width: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
     pub mouse_capture: bool,
+    /// Force a full host-terminal redraw when the outer terminal regains focus. Default: true.
+    pub redraw_on_focus_gained: bool,
     /// Lines to scroll per mouse wheel notch. Default: 3.
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
@@ -271,6 +322,8 @@ pub struct ExperimentalConfig {
     pub allow_nested: bool,
     /// Experimental local Kitty graphics rendering for attached clients. Default: false.
     pub kitty_graphics: bool,
+    /// Persist pane screen history to session-history.json. Default: false.
+    pub pane_history: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`, so macOS native input methods keep tracking
     /// the candidate window when TUIs paint their own cursor (Claude Code, pi,
@@ -308,6 +361,13 @@ impl Default for KeysConfig {
             rename_workspace: BindingConfig::one("prefix+shift+w"),
             close_workspace: BindingConfig::one("prefix+shift+d"),
             workspace_picker: BindingConfig::one("prefix+w"),
+            goto: BindingConfig::one("prefix+g"),
+            navigate_workspace_up: BindingConfig::one("up"),
+            navigate_workspace_down: BindingConfig::one("down"),
+            navigate_pane_left: BindingConfig::one("h"),
+            navigate_pane_down: BindingConfig::one("j"),
+            navigate_pane_up: BindingConfig::one("k"),
+            navigate_pane_right: BindingConfig::one("l"),
             detach: BindingConfig::one("prefix+q"),
             reload_config: BindingConfig::one("prefix+shift+r"),
             open_notification_target: BindingConfig::one("prefix+o"),
@@ -358,6 +418,7 @@ impl Default for UiConfig {
             sidebar_min_width: 18,
             sidebar_max_width: 36,
             mouse_capture: true,
+            redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_tab_name: true,
@@ -431,6 +492,49 @@ default_shell = "nu"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.terminal.default_shell, "nu");
+    }
+
+    #[test]
+    fn terminal_new_cwd_defaults_follow_and_parses() {
+        let default_config = Config::default();
+        assert_eq!(
+            default_config.terminal.new_cwd,
+            NewTerminalCwdConfig::Follow
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+[terminal]
+new_cwd = "home"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.terminal.new_cwd, NewTerminalCwdConfig::Home);
+
+        let config: Config = toml::from_str(
+            r#"
+[terminal]
+new_cwd = "~/Projects"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.terminal.new_cwd,
+            NewTerminalCwdConfig::Path("~/Projects".into())
+        );
+    }
+
+    #[test]
+    fn resume_agents_on_restore_defaults_off_and_parses() {
+        let default_config = Config::default();
+        assert!(!default_config.session.resume_agents_on_restore);
+
+        let toml = r#"
+[session]
+resume_agents_on_restore = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.session.resume_agents_on_restore);
     }
 
     #[test]
@@ -569,6 +673,19 @@ mouse_capture = false
     }
 
     #[test]
+    fn redraw_on_focus_gained_default_on_and_parse() {
+        let default_config = Config::default();
+        assert!(default_config.ui.redraw_on_focus_gained);
+
+        let toml = r#"
+[ui]
+redraw_on_focus_gained = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.redraw_on_focus_gained);
+    }
+
+    #[test]
     fn mouse_scroll_lines_defaults_to_three_and_parses() {
         let default_config = Config::default();
         assert_eq!(
@@ -666,6 +783,19 @@ delivery = "terminal"
     }
 
     #[test]
+    fn pane_history_persistence_is_opt_in() {
+        assert!(!Config::default().experimental.pane_history);
+
+        let toml = r#"
+[experimental]
+pane_history = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert!(config.experimental.pane_history);
+    }
+
+    #[test]
     fn kitty_graphics_default_off_and_parse() {
         let config = Config::default();
         assert!(!config.experimental.kitty_graphics);
@@ -684,10 +814,12 @@ kitty_graphics = true
 [experimental]
 allow_nested = true
 kitty_graphics = true
+pane_history = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.experimental.allow_nested);
         assert!(config.experimental.kitty_graphics);
+        assert!(config.experimental.pane_history);
     }
 
     #[test]

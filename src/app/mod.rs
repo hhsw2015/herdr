@@ -82,6 +82,7 @@ pub struct App {
     pub(crate) next_auto_update_check: Option<Instant>,
     pub(crate) selection_autoscroll_deadline: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
+    pub(crate) persist_pane_history: bool,
     pub(crate) last_render_at: Option<Instant>,
     pub(crate) suppressed_repeat_keys:
         HashSet<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
@@ -90,7 +91,11 @@ pub struct App {
     pub(crate) full_redraw_pending: bool,
     pub(crate) overlay_panes: HashMap<crate::layout::PaneId, OverlayPaneState>,
     pub(crate) local_terminal_notifications: bool,
+    pub(crate) config_reloaded_from_disk: bool,
 }
+
+pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
+pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 
 pub(crate) enum LoopEvent {
     Timer,
@@ -220,7 +225,7 @@ impl App {
     ) -> Self {
         let (prefix_code, prefix_mods) = config.prefix_key();
         crate::kitty_graphics::set_enabled(config.experimental.kitty_graphics);
-        let (event_tx, event_rx) = mpsc::channel::<AppEvent>(64);
+        let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(AtomicBool::new(false));
 
@@ -248,12 +253,19 @@ impl App {
                 std::collections::HashSet::new(),
             )
         } else if let Some(snap) = crate::persist::load() {
+            let history = config
+                .experimental
+                .pane_history
+                .then(crate::persist::load_history)
+                .flatten();
             let (ws, terminals, terminal_runtimes) = crate::persist::restore(
                 &snap,
+                history.as_ref(),
                 24,
                 80,
                 config.advanced.scrollback_limit_bytes,
                 &config.terminal.default_shell,
+                config.session.resume_agents_on_restore,
                 event_tx.clone(),
                 render_notify.clone(),
                 render_dirty.clone(),
@@ -326,7 +338,8 @@ impl App {
             (18, 36)
         });
 
-        let worktree_directory = crate::worktree::expand_tilde_path(&config.worktrees.directory);
+        let worktree_directory =
+            crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
 
         info!(
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
@@ -376,6 +389,7 @@ impl App {
             pending_events: Vec::new(),
             pending_layout_changes: Vec::new(),
             request_client_sound_config_reload: false,
+            request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
@@ -400,6 +414,7 @@ impl App {
                 }
             }),
             keybind_help: state::KeybindHelpState { scroll: 0 },
+            navigator: state::NavigatorState::default(),
             workspace_scroll: 0,
             agent_panel_scroll: 0,
             tab_scroll: 0,
@@ -446,16 +461,19 @@ impl App {
             sidebar_section_split,
             agent_panel_scope,
             mouse_capture: config.ui.mouse_capture,
+            redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             confirm_close: config.ui.confirm_close,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            pane_history_persistence: config.experimental.pane_history,
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
             cjk_ime_agents: parse_cjk_ime_agents(&config.experimental.cjk_ime_agents),
             cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
             kitty_graphics_enabled: config.experimental.kitty_graphics,
             default_shell: config.terminal.default_shell.clone(),
+            new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
@@ -523,6 +541,7 @@ impl App {
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             session_save_deadline: None,
             selection_autoscroll_deadline: None,
+            persist_pane_history: config.experimental.pane_history,
             last_render_at: None,
             suppressed_repeat_keys: HashSet::new(),
             api_rx,
@@ -536,7 +555,72 @@ impl App {
             full_redraw_pending: false,
             overlay_panes: HashMap::new(),
             local_terminal_notifications: true,
+            config_reloaded_from_disk: false,
         }
+    }
+
+    #[cfg(unix)]
+    pub fn new_from_handoff(
+        config: &Config,
+        config_diagnostic: Option<String>,
+        api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
+        event_hub: crate::api::EventHub,
+        snapshot: &crate::persist::SessionSnapshot,
+        imports: &mut std::collections::HashMap<u32, crate::persist::ImportedPaneRuntime>,
+    ) -> io::Result<Self> {
+        let mut app = Self::new(config, true, config_diagnostic, api_rx, event_hub);
+        let (workspaces, terminals, runtimes) = crate::persist::restore_handoff(
+            snapshot,
+            config.advanced.scrollback_limit_bytes,
+            &config.terminal.default_shell,
+            imports,
+            app.event_tx.clone(),
+            app.render_notify.clone(),
+            app.render_dirty.clone(),
+        )?;
+
+        app.no_session = false;
+        app.state.detach_exits = false;
+        app.state.workspaces = workspaces;
+        app.state.terminals = terminals;
+        app.terminal_runtimes = runtimes.into();
+        app.state.active = snapshot
+            .active
+            .filter(|&idx| idx < app.state.workspaces.len());
+        app.state.selected = snapshot
+            .selected
+            .min(app.state.workspaces.len().saturating_sub(1));
+        app.state.agent_panel_scope = snapshot.agent_panel_scope;
+        if let Some(width) = snapshot.sidebar_width {
+            app.state.sidebar_width = width;
+            app.state.sidebar_width_source = state::SidebarWidthSource::Persisted;
+        }
+        if let Some(split) = snapshot.sidebar_section_split {
+            app.state.sidebar_section_split = split;
+        }
+        app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
+        app.state.mode = if app.state.active.is_some() {
+            state::Mode::Terminal
+        } else {
+            state::Mode::Navigate
+        };
+        app.last_focus = app.state.active.and_then(|idx| {
+            app.state
+                .workspaces
+                .get(idx)
+                .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
+        });
+        Ok(app)
+    }
+
+    #[cfg(unix)]
+    pub fn unpause_handoff_readers(&self) {
+        self.terminal_runtimes.set_handoff_readers_paused(false);
+    }
+
+    #[cfg(unix)]
+    pub fn assume_handoff_ownership(&mut self) {
+        self.terminal_runtimes.assume_handoff_ownership();
     }
 
     fn request_full_redraw(&mut self) {
@@ -557,7 +641,8 @@ impl App {
                 needs_render = true;
             }
 
-            // Drain internal events first so API reads observe fresh pane state.
+            // Drain a bounded internal-event batch for responsiveness. API handlers
+            // perform an exhaustive drain before reading pane/runtime state.
             if self.drain_internal_events() {
                 needs_render = true;
             }
@@ -885,10 +970,17 @@ impl App {
         self.apply_config_from_disk(true)
     }
 
+    pub(crate) fn take_config_reloaded_from_disk(&mut self) -> bool {
+        let reloaded = self.config_reloaded_from_disk;
+        self.config_reloaded_from_disk = false;
+        reloaded
+    }
+
     pub(crate) fn apply_config_from_disk(
         &mut self,
         notify_success: bool,
     ) -> crate::config::ConfigReloadReport {
+        self.config_reloaded_from_disk = true;
         let previous_toast = self.state.toast.clone();
         let report = match crate::config::load_live_config() {
             Ok(loaded) => self.apply_live_config(
@@ -971,6 +1063,10 @@ impl App {
                     .sidebar_width
                     .clamp(self.state.sidebar_min_width, self.state.sidebar_max_width);
                 self.state.mouse_capture = config.ui.mouse_capture;
+                if self.state.redraw_on_focus_gained != config.ui.redraw_on_focus_gained {
+                    self.state.request_client_config_reload = true;
+                }
+                self.state.redraw_on_focus_gained = config.ui.redraw_on_focus_gained;
                 self.state.mouse_scroll_lines = config.ui.mouse_scroll_lines();
                 self.state.confirm_close = config.ui.confirm_close;
                 self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
@@ -981,7 +1077,7 @@ impl App {
                 self.state.agent_panel_scroll = 0;
                 self.state.accent = crate::config::parse_color(&config.ui.accent);
                 if !self.state.local_sound_playback && self.state.sound != config.ui.sound {
-                    self.state.request_client_sound_config_reload = true;
+                    self.state.request_client_config_reload = true;
                 }
                 self.state.sound = config.ui.sound.clone();
                 self.state.toast_config = config.ui.toast.clone();
@@ -1002,6 +1098,11 @@ impl App {
             self.state.cjk_ime_agents = parse_cjk_ime_agents(&config.experimental.cjk_ime_agents);
             self.state.cjk_ime_cursor_shape =
                 config.experimental.cjk_ime_cursor_shape.to_decscusr();
+            self.persist_pane_history = config.experimental.pane_history;
+            self.state.pane_history_persistence = config.experimental.pane_history;
+            if !self.persist_pane_history {
+                crate::persist::clear_history();
+            }
         }
 
         if !invalid_section("advanced") {
@@ -1010,11 +1111,12 @@ impl App {
 
         if !invalid_section("terminal") {
             self.state.default_shell = config.terminal.default_shell.clone();
+            self.state.new_terminal_cwd = config.terminal.new_cwd.clone();
         }
 
         if !invalid_section("worktrees") {
             self.state.worktree_directory =
-                crate::worktree::expand_tilde_path(&config.worktrees.directory);
+                crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
         }
 
         if !invalid_section("theme") {
@@ -1217,6 +1319,9 @@ impl App {
             Mode::Settings => {
                 self.handle_settings_key(key_event);
             }
+            Mode::Navigator => {
+                input::handle_navigator_key(&mut self.state, key_event);
+            }
             Mode::Terminal => {
                 // Should not be called in terminal mode.
             }
@@ -1241,7 +1346,7 @@ mod tests {
     use crate::terminal::TerminalRuntime;
     use crate::workspace::Workspace;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
 
     fn raw_key(
         code: KeyCode,
@@ -1274,8 +1379,7 @@ mod tests {
     }
 
     fn config_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::config::test_config_env_lock()
     }
 
     fn temp_config_path(name: &str) -> std::path::PathBuf {
@@ -1344,6 +1448,57 @@ mod tests {
     }
 
     #[test]
+    fn internal_event_drain_limits_work_per_tick() {
+        let mut app = test_app();
+        for i in 0..=APP_EVENT_DRAIN_LIMIT {
+            app.event_tx
+                .try_send(AppEvent::UpdateReady {
+                    version: format!("2.0.{i}"),
+                    install_command: "herdr install".into(),
+                })
+                .unwrap();
+        }
+
+        assert!(app.drain_internal_events());
+
+        let expected_version = format!("2.0.{}", APP_EVENT_DRAIN_LIMIT - 1);
+        assert_eq!(
+            app.state.update_available.as_deref(),
+            Some(expected_version.as_str())
+        );
+        assert!(app.event_rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn api_request_drains_all_pending_internal_events_before_reading_state() {
+        let mut app = test_app();
+        for i in 0..=APP_EVENT_DRAIN_LIMIT {
+            app.event_tx
+                .try_send(AppEvent::UpdateReady {
+                    version: format!("3.0.{i}"),
+                    install_command: "herdr install".into(),
+                })
+                .unwrap();
+        }
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_server_stop_after_events".into(),
+            method: crate::api::schema::Method::ServerStop(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["result"]["type"], "ok");
+        let expected_version = format!("3.0.{APP_EVENT_DRAIN_LIMIT}");
+        assert_eq!(
+            app.state.update_available.as_deref(),
+            Some(expected_version.as_str())
+        );
+        assert!(app.event_rx.try_recv().is_err());
+    }
+
+    #[test]
     fn startup_uses_configured_agent_panel_scope() {
         let mut config = Config::default();
         config.ui.agent_panel_scope = crate::config::AgentPanelScopeConfig::Current;
@@ -1355,6 +1510,17 @@ mod tests {
             app.state.agent_panel_scope,
             state::AgentPanelScope::CurrentWorkspace
         );
+    }
+
+    #[test]
+    fn startup_uses_redraw_on_focus_gained_config() {
+        let mut config = Config::default();
+        config.ui.redraw_on_focus_gained = false;
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+
+        assert!(!app.state.redraw_on_focus_gained);
     }
 
     #[test]
@@ -1467,7 +1633,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[terminal]\ndefault_shell = \"nu\"\n[keys]\nnew_workspace = \"prefix+g\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\n[ui.toast]\ndelivery = \"herdr\"\n",
+            "[terminal]\ndefault_shell = \"nu\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\nredraw_on_focus_gained = false\n[ui.toast]\ndelivery = \"herdr\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1482,7 +1648,7 @@ mod tests {
             .state
             .keybinds
             .new_workspace
-            .matches_prefix(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty())));
+            .matches_prefix(&KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty())));
         assert_eq!(
             app.state.toast_config.delivery,
             crate::config::ToastDelivery::Herdr
@@ -1491,7 +1657,13 @@ mod tests {
             app.state.agent_panel_scope,
             state::AgentPanelScope::CurrentWorkspace
         );
+        assert!(!app.state.redraw_on_focus_gained);
+        assert!(app.state.request_client_config_reload);
         assert_eq!(app.state.default_shell, "nu");
+        assert_eq!(
+            app.state.new_terminal_cwd,
+            crate::config::NewTerminalCwdConfig::Home
+        );
         assert!(app.state.config_diagnostic.is_none());
         let toast = app.state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, crate::app::state::ToastKind::UpdateInstalled);
@@ -1693,7 +1865,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[keys]\nnew_workspace = \"prefix+g\"\n[ui.toast]\ndelivery = \"desktop\"\n",
+            "[keys]\nnew_workspace = \"prefix+m\"\n[ui.toast]\ndelivery = \"desktop\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1707,7 +1879,7 @@ mod tests {
             .state
             .keybinds
             .new_workspace
-            .matches_prefix(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty())));
+            .matches_prefix(&KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty())));
         assert_eq!(
             app.state.toast_config.delivery,
             crate::config::ToastDelivery::Herdr
@@ -1772,6 +1944,31 @@ mod tests {
         );
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("agent_panel_scope = \"current\""));
+        assert!(app.state.config_diagnostic.is_none());
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn settings_save_pane_history_persists_then_applies_live_config() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("settings-save-pane-history");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "onboarding = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert!(!app.persist_pane_history);
+        assert!(!app.state.pane_history_persistence);
+
+        app.save_pane_history_persistence(true);
+
+        assert!(app.persist_pane_history);
+        assert!(app.state.pane_history_persistence);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[experimental]"));
+        assert!(content.contains("pane_history = true"));
         assert!(app.state.config_diagnostic.is_none());
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
@@ -1902,6 +2099,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn outer_focus_gained_does_not_require_full_redraw_when_disabled() {
+        let mut app = test_app();
+        app.state.redraw_on_focus_gained = false;
+
+        let handled = app
+            .handle_raw_input_event(crate::raw_input::RawInputEvent::OuterFocusGained)
+            .await;
+
+        assert!(handled);
+        assert_eq!(app.state.outer_terminal_focus, Some(true));
+        assert!(!app.full_redraw_pending);
+    }
+
+    #[tokio::test]
     async fn repeat_key_events_are_ignored_outside_terminal_mode() {
         let mut app = test_app();
         app.state.mode = Mode::ReleaseNotes;
@@ -1988,10 +2199,24 @@ mod tests {
                 label: Some("logs".into()),
             }),
         };
+        let worktree_list = crate::api::schema::Request {
+            id: "req_4".into(),
+            method: crate::api::schema::Method::WorktreeList(
+                crate::api::schema::WorktreeListParams::default(),
+            ),
+        };
+        let worktree_create = crate::api::schema::Request {
+            id: "req_5".into(),
+            method: crate::api::schema::Method::WorktreeCreate(
+                crate::api::schema::WorktreeCreateParams::default(),
+            ),
+        };
 
         assert!(!crate::api::request_changes_ui(&read_only));
+        assert!(!crate::api::request_changes_ui(&worktree_list));
         assert!(crate::api::request_changes_ui(&mutating));
         assert!(crate::api::request_changes_ui(&pane_rename));
+        assert!(crate::api::request_changes_ui(&worktree_create));
     }
 
     #[test]
@@ -2058,6 +2283,26 @@ mod tests {
 
         assert_eq!(ws_idx, 1);
         assert_eq!(seed_cwd, std::path::PathBuf::from("/tmp/pion"));
+    }
+
+    #[test]
+    fn new_terminal_cwd_follow_uses_source_cwd() {
+        let cwd = creation::resolve_new_terminal_cwd(
+            &crate::config::NewTerminalCwdConfig::Follow,
+            Some(std::path::PathBuf::from("/tmp/herdr-source")),
+        );
+
+        assert_eq!(cwd, std::path::PathBuf::from("/tmp/herdr-source"));
+    }
+
+    #[test]
+    fn new_terminal_cwd_path_uses_configured_path() {
+        let cwd = creation::resolve_new_terminal_cwd(
+            &crate::config::NewTerminalCwdConfig::Path("/tmp/herdr-fixed".into()),
+            Some(std::path::PathBuf::from("/tmp/herdr-source")),
+        );
+
+        assert_eq!(cwd, std::path::PathBuf::from("/tmp/herdr-fixed"));
     }
 
     #[test]
@@ -2572,13 +2817,18 @@ mod tests {
             pane_id,
             agent: Some(Agent::Pi),
             state: AgentState::Working,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
         });
         assert_eq!(
             app.state.terminals.get(&terminal_id).unwrap().state,
             AgentState::Working
         );
 
-        for i in 0..64 {
+        for i in 0..APP_EVENT_CHANNEL_CAPACITY {
             app.event_tx
                 .try_send(AppEvent::UpdateReady {
                     version: format!("9.9.{i}"),
@@ -2592,6 +2842,11 @@ mod tests {
             pane_id,
             agent: Some(Agent::Pi),
             state: AgentState::Idle,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
         });
         tokio::pin!(send);
 
@@ -2609,7 +2864,13 @@ mod tests {
             .expect("state change should enqueue once queue space is available")
             .expect("app event receiver should still be alive");
 
-        app.drain_internal_events();
+        let max_drains = (APP_EVENT_CHANNEL_CAPACITY / APP_EVENT_DRAIN_LIMIT) + 2;
+        for _ in 0..max_drains {
+            if app.state.terminals.get(&terminal_id).unwrap().state == AgentState::Idle {
+                break;
+            }
+            app.drain_internal_events();
+        }
 
         assert_eq!(
             app.state.terminals.get(&terminal_id).unwrap().state,

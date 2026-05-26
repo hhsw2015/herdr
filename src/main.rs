@@ -18,6 +18,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
+mod agent_resume;
 mod api;
 mod app;
 mod cli;
@@ -82,6 +83,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Empty means $SHELL, then /bin/sh.
 # default_shell = ""
 
+# CWD policy for new panes, tabs, and workspaces when no explicit --cwd is provided.
+# Use "follow" to inherit the source pane/workspace, "home" for $HOME,
+# "current" for Herdr's process directory, or a fixed path such as "~/Projects".
+# new_cwd = "follow"
+
 [keys]
 # Prefix key to enter prefix mode (default: "ctrl+b")
 # Examples: "ctrl+b", "f12", "esc", "-"
@@ -100,6 +106,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # reload_config = "prefix+shift+r"
 # open_notification_target = "prefix+o"
 # workspace_picker = "prefix+w"
+# goto = "prefix+g"
 # new_workspace = "prefix+shift+n"
 # new_worktree = "prefix+shift+g"
 # open_worktree = ""    # optional, unset by default
@@ -133,11 +140,20 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resize_mode = "prefix+r"
 # toggle_sidebar = "prefix+b"
 
+# Navigate-mode movement. These local shortcuts win while navigate mode is open.
+# They are independent from focus_pane_*. Do not include prefix+, esc, enter, tab, or 1..9 here.
+# navigate_workspace_up = "up"
+# navigate_workspace_down = "down"
+# navigate_pane_left = "h"      # left arrow always focuses the pane to the left
+# navigate_pane_down = "j"
+# navigate_pane_up = "k"
+# navigate_pane_right = "l"     # right arrow always focuses the pane to the right
+
 # Custom commands use the same binding syntax.
 # type = "shell" runs detached in the background.
 # type = "pane" opens a temporary pane and closes it when the command exits.
 # [[keys.command]]
-# key = "prefix+g"
+# key = "prefix+alt+g"
 # type = "pane"
 # command = "lazygit"
 
@@ -165,6 +181,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Set false to let the terminal handle normal clicks, such as Cmd-clicking URLs.
 # Pane apps like lazygit and btop can still receive mouse when they request it.
 # mouse_capture = true
+
+# Force a full redraw when the outer terminal regains focus.
+# Set false to reduce visible flashing when switching back to Herdr.
+# Trade-off: rare host terminal surface corruption may persist until the next full redraw.
+# redraw_on_focus_gained = true
 
 # Pane scrollback lines to scroll per mouse wheel notch.
 # mouse_scroll_lines = 3
@@ -207,12 +228,19 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.sound.agents]
 # droid = "off"
 
+[session]
+# Resume supported AI-agent panes into their native conversation sessions after
+# a Herdr server restart. Requires official integrations that report session refs.
+# resume_agents_on_restore = false
+
 [experimental]
 # Allow launching herdr from inside a herdr-managed pane.
 # allow_nested = false
 # Experimental local Kitty graphics rendering for attached clients.
 # Requires a Kitty graphics-compatible outer terminal.
 # kitty_graphics = false
+# Save recent pane screen history across full server restarts.
+pane_history = false
 # Expose the focused pane's cursor to the outer terminal so macOS input
 # methods keep tracking the candidate window when TUIs paint their own
 # cursor (Claude Code, pi, codex). Trade-off: extra cursor visible for
@@ -317,7 +345,19 @@ fn main() -> io::Result<()> {
     }
 
     if args.get(1).map(|s| s.as_str()) == Some("update") {
-        match update::self_update() {
+        let options = match update::parse_self_update_args(&args[2..]) {
+            Ok(options) => options,
+            Err(err) if err.starts_with("usage:") => {
+                eprintln!("{err}");
+                std::process::exit(0);
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                eprintln!("usage: herdr update [--handoff]");
+                std::process::exit(2);
+            }
+        };
+        match update::self_update(options) {
             Ok(_) => return Ok(()),
             Err(e) => {
                 if e.starts_with("self-update is disabled") {
@@ -337,11 +377,12 @@ fn main() -> io::Result<()> {
         println!("       herdr --session <name> [options]");
         println!("       herdr --remote <ssh-target> [--session <name>]");
         println!("       herdr session attach <name>");
-        println!("       herdr update");
+        println!("       herdr update [--handoff]");
         println!("       herdr server stop");
         println!("       herdr server reload-config");
         println!("       herdr config <subcommand> ...");
         println!("       herdr workspace <subcommand> ...");
+        println!("       herdr worktree <subcommand> ...");
         println!("       herdr tab <subcommand> ...");
         println!("       herdr agent <subcommand> ...");
         println!("       herdr pane <subcommand> ...");
@@ -372,6 +413,10 @@ fn main() -> io::Result<()> {
             (
                 "herdr workspace <subcommand>",
                 "Workspace helpers over the socket API",
+            ),
+            (
+                "herdr worktree <subcommand>",
+                "Git worktree helpers over the socket API",
             ),
             ("herdr tab <subcommand>", "Tab helpers over the socket API"),
             (
@@ -407,6 +452,7 @@ fn main() -> io::Result<()> {
         println!("  --remote <target>   Attach through SSH to a remote Herdr server");
         println!("  --remote-keybindings <local|server>");
         println!("                      Keybindings for --remote app attach (default: local)");
+        println!("  --handoff           Opt into live handoff for update or remote attach");
         println!("  --default-config    Print default configuration and exit");
         println!("  --version, -V       Print version and exit");
         println!("  --help, -h          Show this help");
@@ -456,6 +502,7 @@ fn main() -> io::Result<()> {
                 "status",
                 "config",
                 "workspace",
+                "worktree",
                 "pane",
                 "wait",
                 "session",
@@ -495,7 +542,7 @@ fn main() -> io::Result<()> {
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = api::EventHub::default();
-    let _api_server = match api::start_server(api_tx, event_hub.clone()) {
+    let _api_server = match api::start_server_with_capabilities(api_tx, event_hub.clone(), None) {
         Ok(server) => server,
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
             eprintln!("error: herdr is already running");

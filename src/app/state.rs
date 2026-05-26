@@ -1,8 +1,9 @@
-use crate::config::{Keybinds, SoundConfig, ToastConfig, ToastDelivery};
+use crate::config::{Keybinds, NewTerminalCwdConfig, SoundConfig, ToastConfig, ToastDelivery};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 use ratatui::style::Color;
 
+use crate::detect::AgentState;
 use crate::layout::{PaneId, PaneInfo, SplitBorder};
 use crate::selection::Selection;
 
@@ -650,6 +651,56 @@ pub enum Mode {
     Settings,
     GlobalMenu,
     KeybindHelp,
+    Navigator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NavigatorTarget {
+    Workspace {
+        ws_idx: usize,
+    },
+    Tab {
+        ws_idx: usize,
+        tab_idx: usize,
+    },
+    Pane {
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: PaneId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NavigatorRow {
+    pub target: NavigatorTarget,
+    pub depth: u8,
+    pub label: String,
+    pub meta: String,
+    pub status: AgentState,
+    pub seen: bool,
+    pub is_current: bool,
+    pub is_workspace: bool,
+    pub is_tab: bool,
+    pub expanded: bool,
+    pub search_text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavigatorStateFilter {
+    Blocked,
+    Working,
+    Idle,
+    Done,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NavigatorState {
+    pub query: String,
+    pub selected: usize,
+    pub scroll: usize,
+    pub search_focused: bool,
+    pub state_filter: Option<NavigatorStateFilter>,
+    pub expanded_workspaces: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -670,6 +721,7 @@ pub enum SettingsSection {
     Sound,
     Toast,
     PaneLabels,
+    Experiments,
     Integrations,
 }
 
@@ -680,6 +732,7 @@ impl SettingsSection {
         Self::Toast,
         Self::PaneLabels,
         Self::Integrations,
+        Self::Experiments,
     ];
 
     pub fn label(self) -> &'static str {
@@ -688,6 +741,7 @@ impl SettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::PaneLabels => "pane labels",
+            Self::Experiments => "experiments",
             Self::Integrations => "integrations",
         }
     }
@@ -1014,7 +1068,7 @@ pub struct AppState {
     pub pending_layout_changes: Vec<(usize, usize)>,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
-    pub request_client_sound_config_reload: bool,
+    pub request_client_config_reload: bool,
     /// Set when UI interaction requested a clipboard write that must be
     /// handled by the outer App/event loop instead of directly from AppState.
     pub request_clipboard_write: Option<Vec<u8>>,
@@ -1032,6 +1086,7 @@ pub struct AppState {
     pub release_notes: Option<ReleaseNotesState>,
     pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
+    pub navigator: NavigatorState,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
     pub tab_scroll: usize,
@@ -1071,10 +1126,12 @@ pub struct AppState {
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
     pub mouse_capture: bool,
+    pub redraw_on_focus_gained: bool,
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
     pub show_agent_labels_on_pane_borders: bool,
+    pub pane_history_persistence: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
     pub reveal_hidden_cursor_for_cjk_ime: bool,
@@ -1086,6 +1143,7 @@ pub struct AppState {
     pub cjk_ime_cursor_shape: u8,
     pub kitty_graphics_enabled: bool,
     pub default_shell: String,
+    pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
     pub accent: Color,
@@ -1155,6 +1213,10 @@ impl AppState {
 
     pub fn agent_border_labels_enabled(&self) -> bool {
         self.show_agent_labels_on_pane_borders
+    }
+
+    pub fn pane_history_persistence_enabled(&self) -> bool {
+        self.pane_history_persistence
     }
 
     pub(crate) fn integration_updates_available(&self) -> bool {
@@ -1343,6 +1405,7 @@ impl AppState {
             pending_events: Vec::new(),
             pending_layout_changes: Vec::new(),
             request_client_sound_config_reload: false,
+            request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
@@ -1358,6 +1421,7 @@ impl AppState {
             release_notes: None,
             product_announcement: None,
             keybind_help: KeybindHelpState { scroll: 0 },
+            navigator: NavigatorState::default(),
             workspace_scroll: 0,
             agent_panel_scroll: 0,
             tab_scroll: 0,
@@ -1404,16 +1468,19 @@ impl AppState {
             sidebar_section_split: 0.5,
             agent_panel_scope: AgentPanelScope::AllWorkspaces,
             mouse_capture: true,
+            redraw_on_focus_gained: true,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
             prompt_new_tab_name: true,
             show_agent_labels_on_pane_borders: false,
+            pane_history_persistence: false,
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,
             cjk_ime_agents: Vec::new(),
             cjk_ime_cursor_shape: 2, // steady_block
             kitty_graphics_enabled: false,
             default_shell: String::new(),
+            new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
             accent: Color::Cyan,
             sound: SoundConfig {

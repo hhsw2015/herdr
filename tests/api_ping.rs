@@ -227,7 +227,7 @@ fn ping_over_socket_returns_version() {
     assert_eq!(value["result"]["version"], env!("CARGO_PKG_VERSION"));
     // Intentionally hardcoded so wire protocol bumps require updating this test.
     // Changing this value means old clients/servers are no longer compatible.
-    assert_eq!(value["result"]["protocol"], 9);
+    assert_eq!(value["result"]["protocol"], 11);
 
     cleanup_spawned_herdr(child, base);
 }
@@ -1140,7 +1140,7 @@ fn events_subscribe_streams_tab_and_workspace_close_events() {
 
     let mut reader = open_subscription(
         &socket_path,
-        r#"{"id":"sub_life_c","method":"events.subscribe","params":{"subscriptions":[{"type":"tab.closed"},{"type":"workspace.closed"}]}}"#,
+        r#"{"id":"sub_life_c","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.renamed"},{"type":"tab.closed"},{"type":"workspace.closed"}]}}"#,
     );
 
     let ack = reader.read_json_line(Duration::from_secs(2));
@@ -1159,10 +1159,24 @@ fn events_subscribe_streams_tab_and_workspace_close_events() {
     let tab_closed = wait_for_event(&mut reader, "tab_closed", Duration::from_secs(2));
     assert_eq!(tab_closed["data"]["tab_id"], second_tab_id);
 
+    let renamed_ws = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"req_tc_4","method":"workspace.rename","params":{{"workspace_id":"{}","label":"renamed"}}}}"#,
+            workspace_id
+        ),
+    );
+    assert_eq!(renamed_ws["result"]["workspace"]["label"], "renamed");
+
+    let workspace_renamed =
+        wait_for_event(&mut reader, "workspace_renamed", Duration::from_secs(2));
+    assert_eq!(workspace_renamed["data"]["workspace_id"], workspace_id);
+    assert_eq!(workspace_renamed["data"]["label"], "renamed");
+
     let closed_ws = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_tc_4","method":"workspace.close","params":{{"workspace_id":"{}"}}}}"#,
+            r#"{{"id":"req_tc_5","method":"workspace.close","params":{{"workspace_id":"{}"}}}}"#,
             workspace_id
         ),
     );
@@ -1812,6 +1826,23 @@ fn pane_info_and_subscriptions_expose_done_agent_status() {
         ),
     );
     assert_eq!(pane["result"]["pane"]["agent_status"], "done");
+
+    let mut already_done_reader = open_subscription(
+        &socket_path,
+        &format!(
+            r#"{{"id":"sub_status_already_done","method":"events.subscribe","params":{{"subscriptions":[{{"type":"pane.agent_status_changed","pane_id":"{}","agent_status":"done"}}]}}}}"#,
+            background_pane_id,
+        ),
+    );
+    let ack = already_done_reader.read_json_line(Duration::from_secs(2));
+    assert_eq!(ack["id"], "sub_status_already_done");
+    assert_eq!(ack["result"]["type"], "subscription_started");
+
+    let initial_status_event = already_done_reader.read_json_line(Duration::from_secs(2));
+    assert_eq!(initial_status_event["event"], "pane.agent_status_changed");
+    assert_eq!(initial_status_event["data"]["pane_id"], background_pane_id);
+    assert_eq!(initial_status_event["data"]["agent_status"], "done");
+    assert_eq!(initial_status_event["data"]["agent"], "pi");
 
     let focused_tab_id = created["result"]["workspace"]["active_tab_id"]
         .as_str()

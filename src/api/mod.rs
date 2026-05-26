@@ -7,7 +7,7 @@ mod subscriptions;
 mod wait;
 
 pub use event_hub::EventHub;
-pub use server::start_server;
+pub use server::{start_server, start_server_with_capabilities, ServerHandle};
 pub use status::{read_runtime_status_at, RuntimeStatus};
 
 use std::path::PathBuf;
@@ -26,6 +26,9 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::WorkspaceFocus(_)
             | Method::WorkspaceRename(_)
             | Method::WorkspaceClose(_)
+            | Method::WorktreeCreate(_)
+            | Method::WorktreeOpen(_)
+            | Method::WorktreeRemove(_)
             | Method::TabCreate(_)
             | Method::TabFocus(_)
             | Method::TabRename(_)

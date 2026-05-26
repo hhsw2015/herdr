@@ -106,7 +106,9 @@ impl App {
                 true
             }
             crate::raw_input::RawInputEvent::OuterFocusGained => {
-                self.request_full_redraw();
+                if self.state.redraw_on_focus_gained {
+                    self.request_full_redraw();
+                }
                 self.state.outer_terminal_focus = Some(true);
                 self.state.mark_active_tab_seen();
                 true
@@ -440,8 +442,23 @@ impl App {
     }
 
     pub(crate) fn drain_internal_events(&mut self) -> bool {
+        self.drain_internal_events_up_to(super::APP_EVENT_DRAIN_LIMIT)
+    }
+
+    pub(crate) fn drain_all_internal_events(&mut self) -> bool {
         let mut had_event = false;
-        while let Ok(ev) = self.event_rx.try_recv() {
+        while self.drain_internal_events_up_to(super::APP_EVENT_DRAIN_LIMIT) {
+            had_event = true;
+        }
+        had_event
+    }
+
+    fn drain_internal_events_up_to(&mut self, limit: usize) -> bool {
+        let mut had_event = false;
+        for _ in 0..limit {
+            let Ok(ev) = self.event_rx.try_recv() else {
+                break;
+            };
             had_event = true;
             self.handle_internal_event(ev);
         }

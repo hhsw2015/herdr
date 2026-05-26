@@ -34,7 +34,7 @@ mod terminal;
 pub(crate) use self::{
     modal::{
         handle_confirm_close_key, handle_context_menu_key, handle_global_menu_key,
-        handle_keybind_help_key, handle_rename_key, handle_resize_key,
+        handle_keybind_help_key, handle_navigator_key, handle_rename_key, handle_resize_key,
     },
     navigate::terminal_direct_navigation_action,
     settings::open_settings_at,
@@ -83,6 +83,7 @@ impl App {
                     Mode::Settings => self.handle_settings_key(key_event),
                     Mode::GlobalMenu => handle_global_menu_key(&mut self.state, key_event),
                     Mode::KeybindHelp => handle_keybind_help_key(&mut self.state, key_event),
+                    Mode::Navigator => handle_navigator_key(&mut self.state, key_event),
                     Mode::Terminal => unreachable!(),
                 }
             }
@@ -203,6 +204,9 @@ impl App {
                 SettingsAction::SaveAgentBorderLabels(enabled) => {
                     self.save_agent_border_labels(enabled)
                 }
+                SettingsAction::SavePaneHistory(enabled) => {
+                    self.save_pane_history_persistence(enabled)
+                }
                 SettingsAction::InstallRecommendedIntegrations => {
                     self.install_recommended_integrations()
                 }
@@ -257,13 +261,17 @@ impl AppState {
         let new_rows = (rows / 2).max(4);
         let new_cols = (cols / 2).max(10);
 
-        let cwd = self
+        let follow_cwd = self
             .active
             .and_then(|i| self.workspaces.get(i))
             .and_then(|ws| {
                 let tab = ws.active_tab()?;
                 tab.cwd_for_pane(tab.layout.focused(), &self.terminals, terminal_runtimes)
             });
+        let cwd = Some(super::creation::resolve_new_terminal_cwd(
+            &self.new_terminal_cwd,
+            follow_cwd,
+        ));
 
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
             if let Ok(new_pane) = ws.split_focused(
