@@ -308,7 +308,7 @@ fn handle_connection(
                         method: method_body,
                     },
                     api_tx,
-                    capabilities,
+                    capabilities.clone(),
                 );
                 if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response) {
                     if is_connection_closed_error(&err) {
