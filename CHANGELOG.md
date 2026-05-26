@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [0.6.2-cmux11] - 2026-05-26
+
+### Changed
+- Merged upstream herdr 0.6.2: optional Nix flake support, `terminal.new_cwd`, OMP integration helper, Git worktree CLI/socket API, Copilot/Kiro/Antigravity/Cursor agent detection, `ui.mouse_scroll_lines`, remote keybindings flag, sidebar worktree groups, named-session reattach hints. See upstream 0.6.1 / 0.6.2 entries below.
+- Resolved post-merge compile breakage: re-imported `BufReader` for the persistent connection loop, kept the fork-only `request_client_sound_config_reload` call sites aligned with the upstream `request_client_config_reload` field, and re-added `raw_pty_tx` / `raw_pty_history` to the no-PTY runtime constructor.
+
 ## [0.6.0-cmux11] - 2026-05-22
 
 ### Fixed
