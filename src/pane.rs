@@ -1177,6 +1177,8 @@ impl PaneRuntime {
             kitty_keyboard_flags,
             detect_reset_notify,
             pending_release,
+            raw_pty_tx: tokio::sync::broadcast::channel::<bytes::Bytes>(16).0,
+            raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
             preserve_processes_on_drop: true,
             detect_handle,
         })

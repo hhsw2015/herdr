@@ -1404,7 +1404,6 @@ impl AppState {
             request_reload_config: false,
             pending_events: Vec::new(),
             pending_layout_changes: Vec::new(),
-            request_client_sound_config_reload: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
