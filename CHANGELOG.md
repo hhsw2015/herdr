@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.6.2-cmux12] - 2026-05-26
+
+### Changed
+- Merged upstream herdr master (17 commits): pane metadata reporting, global last-pane navigation, ctrl-click pane links, idle agent CPU reduction, double-click word copy, codex background terminal wait detection, agent-status delivered through event hub.
+- Resolved post-merge conflicts: kept fork's optional `pane_id` for `Subscription::PaneAgentStatusChanged` (None = global broadcast) while adopting upstream's boxed `ActiveAgentStatusChangedSubscription` with `last_presentation` / `initial_event` fields. Merged TUI focus paths through new `focus_pane_in_workspace` helper while preserving the cmux `PaneFocused` event emission. Dropped fork-only `focus_next` / `focus_prev` helpers (replaced by `pane_ids` cycling via the helper).
+- Cleaned up leftover conflict markers in `event_hub.rs` (preserved fork comment for `current_sequence`).
+
 ## [0.6.2-cmux11] - 2026-05-26
 
 ### Changed
