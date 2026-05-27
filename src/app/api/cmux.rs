@@ -193,14 +193,24 @@ impl App {
         };
         self.state.switch_workspace(ws_idx);
         self.state.switch_tab(tab_idx);
-        let focused = self
+        let pane_present = self
             .state
             .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
-            .map(|tab| tab.layout.focus_pane(pane_id))
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+            .map(|tab| tab.layout.pane_ids().contains(&pane_id))
             .unwrap_or(false);
-        if !focused {
+        if pane_present {
+            if let Some(tab) = self
+                .state
+                .workspaces
+                .get_mut(ws_idx)
+                .and_then(|ws| ws.tabs.get_mut(tab_idx))
+            {
+                tab.layout.focus_pane(pane_id);
+            }
+        }
+        if !pane_present {
             return encode_error(
                 id,
                 "pane_not_found",
