@@ -8,6 +8,11 @@ pub fn foreground_job(_child_pid: u32) -> Option<ForegroundJob> {
 }
 
 /// Unsupported platform stub.
+pub fn foreground_group_leader_job(_process_group_id: u32) -> Option<ForegroundJob> {
+    None
+}
+
+/// Unsupported platform stub.
 pub fn foreground_process_group_id(_child_pid: u32) -> Option<u32> {
     None
 }
@@ -33,6 +38,14 @@ pub fn process_exists(_pid: u32) -> bool {
 /// Unsupported platform stub.
 pub fn write_clipboard(_bytes: &[u8]) -> bool {
     false
+}
+
+/// Unsupported platform stub.
+pub fn open_url(_url: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening URLs is not supported on this platform",
+    ))
 }
 
 /// Unsupported platform stub.

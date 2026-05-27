@@ -783,13 +783,7 @@ fn has_visible_working(agent: Agent, content: &str, state: AgentState) -> bool {
 
 fn has_codex_visible_working(content: &str) -> bool {
     let lines: Vec<&str> = content.lines().collect();
-    let Some(working_index) = lines.iter().rposition(|line| {
-        let trimmed = line.trim_start();
-        let lower = trimmed.to_lowercase();
-        trimmed.starts_with('•')
-            && trimmed.contains("Working (")
-            && (lower.contains("esc to interrupt") || lower.contains("esc…"))
-    }) else {
+    let Some(working_index) = lines.iter().rposition(|line| codex_live_working_line(line)) else {
         return false;
     };
 
@@ -803,10 +797,22 @@ fn has_codex_visible_working(content: &str) -> bool {
 }
 
 fn has_codex_working_header(content: &str) -> bool {
-    content.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with('•') && trimmed.contains("Working (")
-    })
+    content.lines().any(codex_working_status_line)
+}
+
+fn codex_live_working_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let lower = trimmed.to_lowercase();
+    codex_working_status_line(line)
+        && (trimmed.contains("Waiting for background terminal")
+            || lower.contains("esc to interrupt")
+            || lower.contains("esc…"))
+}
+
+fn codex_working_status_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('•')
+        && (trimmed.contains("Working (") || trimmed.contains("Waiting for background terminal ("))
 }
 
 fn has_codex_prompt(content: &str) -> bool {
@@ -989,6 +995,14 @@ fn is_horizontal_rule(line: &str) -> bool {
 /// Delegates to platform-specific implementation.
 pub fn foreground_job(child_pid: u32) -> Option<crate::platform::ForegroundJob> {
     crate::platform::foreground_job(child_pid)
+}
+
+/// Get the foreground process group leader as a one-process job.
+/// This is cheaper than collecting every process in the foreground job.
+pub fn foreground_group_leader_job(
+    process_group_id: u32,
+) -> Option<crate::platform::ForegroundJob> {
+    crate::platform::foreground_group_leader_job(process_group_id)
 }
 
 /// Get the foreground process group for a pane shell PID.
@@ -1759,6 +1773,18 @@ mod tests {
     }
 
     #[test]
+    fn codex_background_terminal_wait_is_visible_working() {
+        let detection = detect_agent(
+            Some(Agent::Codex),
+            "• Waiting for background terminal (0s • esc to …\n  └ cargo test -p codex-core -- --exact…\n\n\n› Ask Codex to do anything",
+        );
+
+        assert_eq!(detection.state, AgentState::Working);
+        assert!(detection.visible_working);
+        assert!(!detection.visible_idle);
+    }
+
+    #[test]
     fn codex_working_header_without_interrupt_is_not_visible_working() {
         let detection = detect_agent(
             Some(Agent::Codex),
@@ -1774,6 +1800,17 @@ mod tests {
         let detection = detect_agent(
             Some(Agent::Codex),
             "• Working (17s • esc to interrupt)\n\n• Ran git status --short\n  └ M src/detect.rs\n\n› Implement {feature}",
+        );
+
+        assert_eq!(detection.state, AgentState::Working);
+        assert!(!detection.visible_working);
+    }
+
+    #[test]
+    fn codex_old_background_terminal_wait_before_later_block_is_not_visible_working() {
+        let detection = detect_agent(
+            Some(Agent::Codex),
+            "• Waiting for background terminal (0s • esc to …\n  └ cargo test -p codex-core\n\n• Ran git status --short\n  └ M src/detect.rs\n\n› Implement {feature}",
         );
 
         assert_eq!(detection.state, AgentState::Working);

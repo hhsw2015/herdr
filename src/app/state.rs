@@ -1001,6 +1001,11 @@ pub struct ToastNotification {
     pub target: Option<ToastTarget>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyFeedback {
+    pub message: String,
+}
+
 pub struct ReleaseNotesState {
     pub version: String,
     pub body: String,
@@ -1028,6 +1033,12 @@ pub enum SidebarWidthSource {
     Manual,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneFocusTarget {
+    pub workspace_id: String,
+    pub pane_id: PaneId,
+}
+
 /// All application state — pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime.
 pub struct AppState {
@@ -1037,6 +1048,7 @@ pub struct AppState {
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
     pub workspaces: Vec<Workspace>,
     pub active: Option<usize>,
+    pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
     pub selected: usize,
     pub mode: Mode,
     pub should_quit: bool,
@@ -1107,6 +1119,7 @@ pub struct AppState {
     pub update_dismissed: bool,
     pub config_diagnostic: Option<String>,
     pub toast: Option<ToastNotification>,
+    pub copy_feedback: Option<CopyFeedback>,
     /// Last reported focus state for the outer terminal hosting herdr.
     /// None means unsupported or not yet reported, which preserves active-pane suppression.
     pub outer_terminal_focus: Option<bool>,
@@ -1387,6 +1400,7 @@ impl AppState {
             direct_attach_resize_locks: std::collections::HashSet::new(),
             workspaces: Vec::new(),
             active: None,
+            previous_pane_focus: None,
             selected: 0,
             mode: Mode::Navigate,
             should_quit: false,
@@ -1454,6 +1468,7 @@ impl AppState {
             update_dismissed: false,
             config_diagnostic: None,
             toast: None,
+            copy_feedback: None,
             outer_terminal_focus: None,
             prefix_code: KeyCode::Char('b'),
             prefix_mods: KeyModifiers::CONTROL,

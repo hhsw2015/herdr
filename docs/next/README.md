@@ -102,7 +102,7 @@ ssh you@yourserver
 herdr
 ```
 
-or attach from your local terminal through ssh without opening a shell first. your local herdr acts as a thin client, connects over ssh, starts or attaches to the remote herdr server, and streams the ui back to your terminal. remote attach uses your local keybindings by default; pass `--remote-keybindings server` to use the remote server config instead. pass `--handoff` to opt into live handoff if remote attach needs to replace a supported running remote server.
+or attach from your local terminal through ssh without opening a shell first. your local herdr acts as a thin client, connects over ssh, starts or attaches to the remote herdr server, and streams the ui back to your terminal. remote attach uses your local keybindings by default; pass `--remote-keybindings server` to use the remote server config instead. pass `--handoff` to opt into live handoff if remote attach needs to replace a supported running remote server. Homebrew and Nix clients bootstrap remote hosts from the matching release asset instead of copying the package-manager-managed local binary.
 
 ```bash
 herdr --remote workbox
@@ -243,6 +243,8 @@ resize mode: `h`/`l` resize width, `j`/`k` resize height, `esc` exit.
 
 session navigator opens a searchable workspace, tab, and pane tree. use `/` for text search, `b`/`w`/`i`/`d` for blocked, working, idle, and done filters, `a` or backspace to clear a state filter, and enter to switch to the highlighted row.
 
+last-pane is available but unset by default. bind `last_pane` in `[keys]` if you want tmux-style back-and-forth navigation to the last focused pane across workspaces and tabs; for example, `last_pane = "prefix+tab"`.
+
 custom command keybindings can launch detached shell helpers or temporary panes:
 
 ```toml
@@ -335,7 +337,12 @@ just check       # formatting, tests, and maintenance checks
 
 ## license
 
-agpl-3.0: free to use, modify, and distribute. modified versions must be open-sourced under the same license.
+Herdr is dual-licensed:
+
+1. Open source: GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).
+2. Commercial: commercial licenses are available for organizations that cannot comply with AGPL.
+
+Contact: hey@herdr.dev
 
 ## pi, ghostty, and shift+enter
 

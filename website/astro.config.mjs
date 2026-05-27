@@ -54,10 +54,6 @@ export default defineConfig({
       title: 'herdr',
       description: 'Terminal-native agent runtime and multiplexer.',
       favicon: '/assets/favicon.png?v=14',
-      logo: {
-        src: './public/assets/logo.svg',
-        alt: 'herdr',
-      },
       social: [
         {
           icon: 'github',
@@ -72,7 +68,7 @@ export default defineConfig({
       head: [
         {
           tag: 'meta',
-          attrs: { property: 'og:image', content: 'https://herdr.dev/assets/doc-og-card-v2.png' },
+          attrs: { property: 'og:image', content: 'https://herdr.dev/assets/og-card-v6.png' },
         },
         { tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
         { tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
@@ -85,7 +81,7 @@ export default defineConfig({
         },
         {
           tag: 'meta',
-          attrs: { name: 'twitter:image', content: 'https://herdr.dev/assets/doc-og-card-v2.png' },
+          attrs: { name: 'twitter:image', content: 'https://herdr.dev/assets/og-card-v6.png' },
         },
         {
           tag: 'meta',
