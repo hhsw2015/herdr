@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## [0.6.4-cmux1] - 2026-05-28
+
+### Changed
+- Merged upstream herdr master (19 commits) up to v0.6.4: agent session ref API, session socket timeout clamp, workspace rename live cwd seeding, terminal reply routing fix, live handoff terminal state preservation, macOS server fd limit raise, mp3 sound alert player fallback, OpenCode integration dispose fix, host color reply buffering, codex background terminal wait detection, agent status subscription delivery, pane Ctrl-click URL opening, double-click word copy with copy feedback, pane.report_metadata, navigate-mode movement bindings, configurable last_pane keybinding, scrollback in direct attach (protocol v11), opt-in pane history, configurable mobile width threshold, native agent session restore.
+- Resolved post-merge conflicts: kept fork's `public_workspace_id` / `public_pane_id` / `public_tab_id` helpers alongside upstream's `remove_alias_shadowed_by_new_pane`; kept fork's `layout_node_to_wire` alongside upstream's `terminal_agent_session_info`.
+
+### Fixed
+- Updated `layout.rs` test for new `focus_pane` signature (was bool, now unit).
+- Tagged fork-only `MAX_INITIAL_REQUEST_BYTES` and `read_initial_request_line` as `dead_code` so clippy `-D warnings` no longer fails on macOS-only paths.
+- Refreshed nix `cargoHash` after `Cargo.lock` updated.
+
 ## [0.6.2-cmux12] - 2026-05-26
 
 ### Changed
