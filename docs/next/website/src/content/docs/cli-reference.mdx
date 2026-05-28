@@ -129,8 +129,12 @@ herdr pane report-agent <pane_id> \
   --state idle|working|blocked|unknown \
   [--message TEXT] \
   [--custom-status TEXT] \
-  [--seq N]
+  [--seq N] \
+  [--agent-session-id ID] \
+  [--agent-session-path PATH]
 ```
+
+`pane get`, `pane list`, `agent get`, and `agent list` include a read-only `agent_session` object when an official integration has reported a native session reference. If no native session reference is stored, the field is omitted.
 
 Report display-only pane metadata without taking over semantic state:
 
@@ -203,12 +207,14 @@ herdr integration install claude
 herdr integration install codex
 herdr integration install opencode
 herdr integration install hermes
+herdr integration install qodercli
 herdr integration uninstall pi
 herdr integration uninstall omp
 herdr integration uninstall claude
 herdr integration uninstall codex
 herdr integration uninstall opencode
 herdr integration uninstall hermes
+herdr integration uninstall qodercli
 herdr integration status [--outdated-only]
 ```
 

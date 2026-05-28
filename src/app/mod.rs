@@ -393,6 +393,7 @@ impl App {
         let mut state = AppState {
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
+            pane_id_aliases: std::collections::HashMap::new(),
             workspaces,
             active,
             previous_pane_focus: None,
@@ -480,6 +481,7 @@ impl App {
             sidebar_width,
             sidebar_min_width,
             sidebar_max_width,
+            mobile_width_threshold: config.ui.mobile_width_threshold,
             sidebar_width_source,
             sidebar_width_auto: false,
             sidebar_collapsed: false,
@@ -595,7 +597,10 @@ impl App {
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
         snapshot: &crate::persist::SessionSnapshot,
-        imports: &mut std::collections::HashMap<u32, crate::persist::ImportedPaneRuntime>,
+        imports: &mut std::collections::HashMap<
+            u32,
+            crate::handoff_runtime::ImportedHandoffRuntime,
+        >,
     ) -> io::Result<Self> {
         let mut app = Self::new(config, true, config_diagnostic, api_rx, event_hub);
         let (workspaces, terminals, runtimes) = crate::persist::restore_handoff(
@@ -607,9 +612,11 @@ impl App {
             app.render_notify.clone(),
             app.render_dirty.clone(),
         )?;
+        let pane_id_aliases = crate::persist::handoff_pane_aliases(snapshot, &workspaces);
 
         app.no_session = false;
         app.state.detach_exits = false;
+        app.state.pane_id_aliases = pane_id_aliases;
         app.state.workspaces = workspaces;
         app.state.terminals = terminals;
         app.terminal_runtimes = runtimes.into();
@@ -1085,6 +1092,7 @@ impl App {
                 }
                 self.state.sidebar_min_width = config.ui.sidebar_min_width;
                 self.state.sidebar_max_width = config.ui.sidebar_max_width;
+                self.state.mobile_width_threshold = config.ui.mobile_width_threshold;
                 // Re-clamp the live width to the new bounds. No source guard — bounds
                 // always apply, including to widths owned by Persisted or Manual.
                 self.state.sidebar_width = self
@@ -1784,6 +1792,10 @@ mod tests {
         // Default bounds.
         assert_eq!(app.state.sidebar_min_width, 18);
         assert_eq!(app.state.sidebar_max_width, 36);
+        assert_eq!(
+            app.state.mobile_width_threshold,
+            crate::config::DEFAULT_MOBILE_WIDTH_THRESHOLD
+        );
 
         // Manually set a width and flip the source so the existing
         // sidebar_width-only-when-config-owned guard does NOT update it.
@@ -1818,6 +1830,29 @@ mod tests {
             app.state.sidebar_width, 30,
             "manual width must re-clamp up to new min"
         );
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn reload_config_updates_mobile_width_threshold() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("reload-config-mobile-width-threshold");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert_eq!(
+            app.state.mobile_width_threshold,
+            crate::config::DEFAULT_MOBILE_WIDTH_THRESHOLD
+        );
+
+        std::fs::write(&path, "[ui]\nmobile_width_threshold = 96\n").unwrap();
+        let report = app.reload_config();
+
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        assert_eq!(app.state.mobile_width_threshold, 96);
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

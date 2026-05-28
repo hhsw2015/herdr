@@ -1046,6 +1046,7 @@ pub struct AppState {
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     /// Terminal ids whose size is currently owned by a direct attach client.
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
+    pub(crate) pane_id_aliases: std::collections::HashMap<u32, PaneId>,
     pub workspaces: Vec<Workspace>,
     pub active: Option<usize>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
@@ -1130,6 +1131,7 @@ pub struct AppState {
     pub sidebar_width: u16,
     pub sidebar_min_width: u16,
     pub sidebar_max_width: u16,
+    pub mobile_width_threshold: u16,
     pub sidebar_width_source: SidebarWidthSource,
     pub sidebar_width_auto: bool,
     pub sidebar_collapsed: bool,
@@ -1214,6 +1216,10 @@ impl AppState {
         let ws = self.workspaces.get(ws_idx)?;
         ws.tabs.get(tab_idx)?;
         Some(format!("{}:{}", ws.id, tab_idx + 1))
+    }
+
+    pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
+        self.pane_id_aliases.remove(&pane_id.raw());
     }
 
     pub fn sound_enabled(&self) -> bool {
@@ -1398,6 +1404,7 @@ impl AppState {
         Self {
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
+            pane_id_aliases: std::collections::HashMap::new(),
             workspaces: Vec::new(),
             active: None,
             previous_pane_focus: None,
@@ -1476,6 +1483,7 @@ impl AppState {
             sidebar_width: 26,
             sidebar_min_width: 18,
             sidebar_max_width: 36,
+            mobile_width_threshold: crate::config::DEFAULT_MOBILE_WIDTH_THRESHOLD,
             sidebar_width_source: SidebarWidthSource::ConfigDefault,
             sidebar_width_auto: false,
             sidebar_collapsed: false,

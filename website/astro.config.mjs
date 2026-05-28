@@ -114,6 +114,7 @@ export default defineConfig({
             { label: 'Integrations', slug: 'docs/integrations' },
             { label: 'Configuration', slug: 'docs/configuration' },
             { label: 'Persistence and remote access', slug: 'docs/persistence-remote' },
+            { label: 'Session state and restore', slug: 'docs/session-state' },
           ],
         },
         {
@@ -122,6 +123,13 @@ export default defineConfig({
             { label: 'CLI reference', slug: 'docs/cli-reference' },
             { label: 'Socket API', slug: 'docs/socket-api' },
             { label: 'Agent skill file', slug: 'docs/agent-skill' },
+          ],
+        },
+        {
+          label: 'Updates',
+          items: [
+            { label: 'Releases', link: '/releases/' },
+            { label: 'Blog', link: '/blog/' },
           ],
         },
       ],

@@ -227,6 +227,7 @@ Common options:
 sidebar_width = 32
 sidebar_min_width = 18
 sidebar_max_width = 36
+mobile_width_threshold = 64
 mouse_capture = true
 redraw_on_focus_gained = true
 mouse_scroll_lines = 3
@@ -238,6 +239,8 @@ accent = "cyan"
 ```
 
 `sidebar_min_width` and `sidebar_max_width` control the expanded sidebar's resize bounds in columns. The defaults are 18 and 36.
+
+`mobile_width_threshold` controls the terminal width at or below which Herdr uses the mobile single-column layout. The default is 64 columns; increase it for foldables, tablets, or wide phone terminals.
 
 `agent_panel_scope` can be `all` or `current`. Use `current` if you only want the agent panel to show agents in the active workspace.
 
@@ -281,7 +284,7 @@ enabled = true
 
 Herdr plays a done sound when an agent finishes and an attention sound when an agent needs input. Set `enabled = false` on shared machines or remote servers unless you explicitly want audio.
 
-On macOS, Herdr uses `afplay`. On Linux, Herdr tries `paplay`, then `aplay`. If no player is available, sound playback is skipped and Herdr logs a warning.
+On macOS, Herdr uses `afplay`. On Linux, Herdr tries mp3-capable players in order: `paplay`, `pw-play`, `ffplay`, `mpg123`, then `mpv`. If no player is available, sound playback is skipped and Herdr logs a warning.
 
 Custom sounds must be mp3 files. Relative paths are resolved from the config file's directory.
 
@@ -382,7 +385,7 @@ cjk_ime_cursor_shape = "steady_block"
 
 When enabled, the cursor stays visible at the focused pane's reported position. If the pane reports no cursor position, the anchor falls back to the pane's top-left so a stable IME hint is always available.
 
-`cjk_ime_agents` is an optional allow-list. When empty, the reveal applies to any focused pane. When non-empty, the reveal only applies if the focused pane's detected agent matches one of the listed names — useful to enable the reveal only for AI-agent TUIs that paint their own cursor while leaving plain shells untouched. Accepted names: `pi`, `claude`, `codex`, `gemini`, `cursor`, `agy`, `cline`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`. Unknown names are ignored; if the list contains no valid names, the reveal does not apply.
+`cjk_ime_agents` is an optional allow-list. When empty, the reveal applies to any focused pane. When non-empty, the reveal only applies if the focused pane's detected agent matches one of the listed names — useful to enable the reveal only for AI-agent TUIs that paint their own cursor while leaving plain shells untouched. Accepted names: `pi`, `claude`, `codex`, `gemini`, `cursor`, `agy`, `cline`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`, `qodercli`, and `qoder`. Unknown names are ignored; if the list contains no valid names, the reveal does not apply.
 
 `cjk_ime_cursor_shape` controls the DECSCUSR shape rendered for the IME anchor. Accepted values: `block`, `steady_block` (default), `underline`, `steady_underline`, `bar`, `steady_bar`.
 
