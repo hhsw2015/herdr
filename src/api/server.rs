@@ -23,6 +23,7 @@ pub(super) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100)
 pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+#[allow(dead_code)]
 const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
 
 pub struct ServerHandle {
@@ -431,6 +432,7 @@ fn api_response_outcome(response: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn read_initial_request_line(stream: &mut UnixStream) -> std::io::Result<Option<String>> {
     stream.set_nonblocking(true)?;
     let deadline = Instant::now() + INITIAL_REQUEST_TIMEOUT;

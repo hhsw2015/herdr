@@ -547,7 +547,10 @@ mod tests {
     fn focus_pane_rejects_unknown_id() {
         let (mut layout, root) = TileLayout::new();
         let other = PaneId::from_raw(99_999);
-        assert!(layout.focus_pane(root));
-        assert!(!layout.focus_pane(other));
+        layout.focus_pane(root);
+        assert_eq!(layout.focused(), root);
+        layout.focus_pane(other);
+        // Unknown ids leave the previous focus unchanged.
+        assert_eq!(layout.focused(), root);
     }
 }
