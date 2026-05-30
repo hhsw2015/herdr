@@ -1225,6 +1225,7 @@ impl HeadlessServer {
                         } else {
                             toast_message_from_state_change(
                                 &self.app.state,
+                                &self.app.terminal_runtimes,
                                 pane_id_val,
                                 suppress_active_tab_notifications,
                                 prev_state,
@@ -1309,6 +1310,7 @@ impl HeadlessServer {
                         } else {
                             toast_message_from_state_change(
                                 &self.app.state,
+                                &self.app.terminal_runtimes,
                                 pane_id_val,
                                 suppress_active_tab_notifications,
                                 prev_state,
@@ -1845,7 +1847,16 @@ impl HeadlessServer {
                     }
                     return true;
                 }
-                let events = crate::raw_input::parse_raw_input_bytes_sync(&data);
+                let events = if let Some(client) = self.clients.get_mut(&client_id) {
+                    let mut events = client.raw_input.push(&data);
+                    // The thin client only forwards a bare ESC after its local input timeout.
+                    if data.as_slice() == b"\x1b" {
+                        events.extend(client.raw_input.flush_timeout());
+                    }
+                    events
+                } else {
+                    Vec::new()
+                };
                 let host_surface_redraw = crate::raw_input::events_require_host_surface_redraw(
                     &events,
                     self.app.state.redraw_on_focus_gained,
@@ -2222,12 +2233,17 @@ impl HeadlessServer {
                             crate::app::state::ToastKind::Finished => "finished",
                             crate::app::state::ToastKind::UpdateInstalled => "updated",
                         };
+                        let workspace_label = self.app.state.workspaces[*ws_idx].display_name_from(
+                            &self.app.state.terminals,
+                            &self.app.terminal_runtimes,
+                        );
                         let msg_text = format!(
                             "{} {}: {}",
                             agent_label,
                             event_text,
                             crate::app::actions::notification_context(
                                 &self.app.state.workspaces[*ws_idx],
+                                &workspace_label,
                                 *ws_idx,
                                 *pane_id,
                             )
@@ -2598,7 +2614,10 @@ impl HeadlessServer {
             .agent_metadata_deadline
             .filter(|deadline| now >= *deadline)
         {
+            let previous_toast = self.app.state.toast.clone();
             for update in self.app.state.expire_agent_metadata_at(deadline, now) {
+                self.app
+                    .refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
                 self.app.emit_pane_state_update(&update);
             }
             self.app.sync_agent_metadata_deadline();
@@ -4419,6 +4438,93 @@ next_tab = ""
         assert!(!changed);
         assert_eq!(server.clients[&1].outer_terminal_focus, Some(false));
         assert_eq!(server.app.state.outer_terminal_focus, Some(false));
+    }
+
+    #[test]
+    fn app_client_lone_escape_closes_navigate_mode() {
+        let mut server = test_headless_server();
+        server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("test")];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Navigate;
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                1,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+
+        assert!(server.handle_server_event(ServerEvent::ClientInput {
+            client_id: 1,
+            data: b"\x1b".to_vec(),
+        }));
+
+        assert_eq!(server.app.state.mode, crate::app::Mode::Terminal);
+    }
+
+    #[tokio::test]
+    async fn split_default_background_response_updates_theme_without_forwarding_tail() {
+        let mut server = test_headless_server();
+        let mut workspace = crate::workspace::Workspace::test_new("test");
+        let focused = workspace.focused_pane_id().unwrap();
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+        workspace.tabs[0].runtimes.insert(focused, runtime);
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                1,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+
+        let _ = server.handle_server_event(ServerEvent::ClientInput {
+            client_id: 1,
+            data: b"\x1b]".to_vec(),
+        });
+        assert!(rx.try_recv().is_err());
+
+        assert!(server.handle_server_event(ServerEvent::ClientInput {
+            client_id: 1,
+            data: b"11;#123456\x07".to_vec(),
+        }));
+
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            server.clients[&1].host_terminal_theme.background,
+            Some(crate::terminal_theme::RgbColor {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56,
+            })
+        );
+        assert_eq!(
+            server.app.state.host_terminal_theme.background,
+            Some(crate::terminal_theme::RgbColor {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56,
+            })
+        );
     }
 
     #[test]

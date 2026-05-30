@@ -921,6 +921,8 @@ pub struct AgentInfo {
     pub focused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_cwd: Option<String>,
     pub revision: u64,
 }
 
@@ -933,6 +935,8 @@ pub struct PaneInfo {
     pub focused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1533,6 +1537,7 @@ mod tests {
                     tab_id: "w_1:1".into(),
                     focused: true,
                     cwd: Some("/worktrees/herdr/worktree-api".into()),
+                    foreground_cwd: None,
                     label: None,
                     agent: None,
                     title: None,
@@ -1583,6 +1588,7 @@ mod tests {
                     tab_id: "w_1:2".into(),
                     focused: false,
                     cwd: Some("/tmp/review".into()),
+                    foreground_cwd: None,
                     label: None,
                     agent: None,
                     title: None,

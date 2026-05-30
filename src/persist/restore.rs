@@ -36,7 +36,7 @@ struct PaneRestoreStartup<'a> {
 
 struct RestoreRuntimeContext<'a> {
     scrollback_limit_bytes: usize,
-    default_shell: &'a str,
+    shell_config: crate::pane::PaneShellConfig<'a>,
     resume_agents_on_restore: bool,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -68,6 +68,7 @@ pub fn restore(
     cols: u16,
     scrollback_limit_bytes: usize,
     default_shell: &str,
+    shell_mode: crate::config::ShellModeConfig,
     resume_agents_on_restore: bool,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -80,7 +81,7 @@ pub fn restore(
         rows,
         cols,
         scrollback_limit_bytes,
-        default_shell,
+        crate::pane::PaneShellConfig::new(default_shell, shell_mode),
         resume_agents_on_restore,
         &mut imported_panes,
         events,
@@ -94,6 +95,7 @@ pub fn restore_handoff(
     snapshot: &SessionSnapshot,
     scrollback_limit_bytes: usize,
     default_shell: &str,
+    shell_mode: crate::config::ShellModeConfig,
     imports: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -105,7 +107,7 @@ pub fn restore_handoff(
         24,
         80,
         scrollback_limit_bytes,
-        default_shell,
+        crate::pane::PaneShellConfig::new(default_shell, shell_mode),
         false,
         imports,
         events,
@@ -159,7 +161,7 @@ fn restore_with_imports_strict(
     rows: u16,
     cols: u16,
     scrollback_limit_bytes: usize,
-    default_shell: &str,
+    shell_config: crate::pane::PaneShellConfig<'_>,
     resume_agents_on_restore: bool,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
@@ -172,7 +174,7 @@ fn restore_with_imports_strict(
         rows,
         cols,
         scrollback_limit_bytes,
-        default_shell,
+        shell_config,
         resume_agents_on_restore,
         imported_panes,
         events,
@@ -199,7 +201,7 @@ fn restore_with_imports(
     rows: u16,
     cols: u16,
     scrollback_limit_bytes: usize,
-    default_shell: &str,
+    shell_config: crate::pane::PaneShellConfig<'_>,
     resume_agents_on_restore: bool,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
@@ -212,7 +214,7 @@ fn restore_with_imports(
         rows,
         cols,
         scrollback_limit_bytes,
-        default_shell,
+        shell_config,
         resume_agents_on_restore,
         imported_panes,
         events,
@@ -228,7 +230,7 @@ fn restore_with_imports_and_failures(
     rows: u16,
     cols: u16,
     scrollback_limit_bytes: usize,
-    default_shell: &str,
+    shell_config: crate::pane::PaneShellConfig<'_>,
     resume_agents_on_restore: bool,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
@@ -243,7 +245,7 @@ fn restore_with_imports_and_failures(
     for (idx, ws_snap) in snapshot.workspaces.iter().enumerate() {
         let runtime_context = RestoreRuntimeContext {
             scrollback_limit_bytes,
-            default_shell,
+            shell_config,
             resume_agents_on_restore,
             events: events.clone(),
             render_notify: render_notify.clone(),
@@ -416,6 +418,7 @@ fn restore_tab(
         let old_pane_id = reverse_id_map.get(id).copied();
         let imported_runtime = old_pane_id.and_then(|old_id| imported_panes.remove(&old_id));
         let was_imported = imported_runtime.is_some();
+        let was_native_agent_restore = !was_imported && startup.restore_plan.is_some();
         let runtime_result = if let Some(imported) = imported_runtime {
             TerminalRuntime::from_handoff_fd(
                 crate::handoff_runtime::ImportedHandoffRuntime {
@@ -453,7 +456,7 @@ fn restore_tab(
                 cwd.clone(),
                 runtime_context.scrollback_limit_bytes,
                 crate::terminal_theme::TerminalTheme::default(),
-                runtime_context.default_shell,
+                runtime_context.shell_config,
                 startup.initial_history_ansi,
                 runtime_context.events.clone(),
                 runtime_context.render_notify.clone(),
@@ -465,7 +468,9 @@ fn restore_tab(
             Ok(runtime) => {
                 let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
-                if was_imported {
+                if was_native_agent_restore {
+                    terminal = terminal.with_respawn_shell_on_exit();
+                } else if was_imported {
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
@@ -748,6 +753,30 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: OsString) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn capture_and_restore_node_round_trip() {
@@ -1026,20 +1055,126 @@ mod tests {
             80,
             0,
             "/bin/true",
+            crate::config::ShellModeConfig::NonLogin,
             false,
             events,
             Arc::new(Notify::new()),
             Arc::new(AtomicBool::new(false)),
         );
 
-        let session = terminals
+        let terminal = terminals
             .values()
             .next()
-            .and_then(|terminal| terminal.persisted_agent_session.as_ref())
+            .expect("restored terminal should exist");
+        assert!(
+            !terminal.respawn_shell_on_exit,
+            "agent sessions should not use native restore lifecycle when resume_agents_on_restore is disabled"
+        );
+        let session = terminal
+            .persisted_agent_session
+            .as_ref()
             .expect("persisted agent session should survive restore");
         assert_eq!(session.source, "herdr:opencode");
         assert_eq!(session.agent, "opencode");
         assert_eq!(session.session_ref.value, "opencode-session");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn native_agent_restore_marks_terminal_for_shell_respawn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::integration::integration_env_lock();
+        let cwd = std::env::current_dir().unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "herdr-agent-restore-respawn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bin = base.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let codex = bin.join("codex");
+        std::fs::write(&codex, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = match std::env::var_os("PATH") {
+            Some(path) => std::env::join_paths(
+                std::iter::once(bin.as_os_str().to_owned())
+                    .chain(std::env::split_paths(&path).map(|path| path.into_os_string())),
+            )
+            .unwrap(),
+            None => bin.as_os_str().to_owned(),
+        };
+        let _path_guard = EnvVarGuard::set("PATH", path);
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd,
+                            label: None,
+                            agent_name: None,
+                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                                source: "herdr:codex".into(),
+                                agent: "codex".into(),
+                                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                                value: "codex-session".into(),
+                            }),
+                            launch_argv: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            agent_panel_scope: Default::default(),
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (_workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            "/bin/sh",
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let terminal = terminals
+            .values()
+            .next()
+            .expect("native agent restore should create terminal state");
+        assert!(
+            terminal.respawn_shell_on_exit,
+            "restored native agent panes should keep the pane open after the resume process exits"
+        );
+
+        for runtime in runtimes.into_values() {
+            runtime.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[tokio::test]
@@ -1056,6 +1191,7 @@ mod tests {
             40,
             4096,
             "/bin/sh",
+            crate::config::ShellModeConfig::NonLogin,
             false,
             events,
             render_notify,
@@ -1094,6 +1230,7 @@ mod tests {
             40,
             4096,
             "/bin/sh",
+            crate::config::ShellModeConfig::NonLogin,
             false,
             events,
             render_notify,

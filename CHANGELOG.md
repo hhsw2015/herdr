@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [0.6.5-cmux1] - 2026-05-30
+
+### Changed
+- Merge upstream master through v0.6.5: pane copy mode, login shells on macOS panes, foreground cwd in pane info, OSC52 clipboard preference in WSL, restored agent panes, opencode working state preservation, live workspace labels in notifications.
+- Resolved conflicts: take upstream's `pane_shell_command_builder` (upstream's "use login shells for macos panes" already covers fork's manual `-l` arg); fork version 0.6.5-cmux1.
+
 ## [0.6.4-cmux1] - 2026-05-28
 
 ### Changed
@@ -149,6 +155,22 @@
 
 ### Added
 - cmux fork build with api-bridge (SSH-tunneled JSON-RPC), raw-pty-attach (external GUI clients), layout snapshot/mutation RPCs, LayoutChanged/TabReordered events, pane.resize.
+## [0.6.5] - 2026-05-29
+
+### Added
+- Added pane copy mode at `prefix+[` with keyboard navigation, visual selection, and clipboard yank support. (#231)
+- Added `foreground_cwd` to pane and agent API/CLI responses so integrations can inspect the active foreground process directory without changing the existing pane/workspace `cwd` semantics. (#345)
+- Added read-only `agent_session` metadata to pane and agent API/CLI responses when official integrations report native session references.
+
+### Fixed
+- Live handoff now preserves terminal state when transferring supported running panes to a replacement server.
+- WSL clipboard writes now prefer OSC 52 before WSLg clipboard tools, so mouse selection and double-click copy populate Windows clipboard history in Windows Terminal. (#333)
+- Incomplete host terminal OSC default-color replies no longer get misread as Alt-key input and forwarded into panes, preventing interactive prompts such as `gh auth login --web` from aborting on split `ESC ]` input. (#279, #306, #344)
+- Workspace rename prompts and background notifications now use live cwd-derived workspace labels instead of stale session labels. (#332)
+- `herdr session stop` no longer fails on zero-duration socket timeouts when the stop deadline is nearly exhausted.
+- Update preview instructions now wrap long package-manager commands instead of truncating the shell command suffix.
+- Restored native agent resume panes now fall back to a shell when the resumed agent exits instead of closing the whole pane.
+
 ## [0.6.4] - 2026-05-27
 
 ### Fixed

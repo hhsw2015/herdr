@@ -289,6 +289,7 @@ impl App {
                 80,
                 config.advanced.scrollback_limit_bytes,
                 &config.terminal.default_shell,
+                config.terminal.shell_mode,
                 config.session.resume_agents_on_restore,
                 event_tx.clone(),
                 render_notify.clone(),
@@ -440,6 +441,7 @@ impl App {
             }),
             keybind_help: state::KeybindHelpState { scroll: 0 },
             navigator: state::NavigatorState::default(),
+            copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
             tab_scroll: 0,
@@ -500,6 +502,7 @@ impl App {
             cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
             kitty_graphics_enabled: config.experimental.kitty_graphics,
             default_shell: config.terminal.default_shell.clone(),
+            shell_mode: config.terminal.shell_mode,
             new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
             accent: crate::config::parse_color(&config.ui.accent),
@@ -607,6 +610,7 @@ impl App {
             snapshot,
             config.advanced.scrollback_limit_bytes,
             &config.terminal.default_shell,
+            config.terminal.shell_mode,
             imports,
             app.event_tx.clone(),
             app.render_notify.clone(),
@@ -1148,6 +1152,7 @@ impl App {
 
         if !invalid_section("terminal") {
             self.state.default_shell = config.terminal.default_shell.clone();
+            self.state.shell_mode = config.terminal.shell_mode;
             self.state.new_terminal_cwd = config.terminal.new_cwd.clone();
         }
 
@@ -1312,6 +1317,9 @@ impl App {
             }
             Mode::Navigate => {
                 self.handle_navigate_key(key);
+            }
+            Mode::Copy => {
+                self.handle_copy_mode_key(key);
             }
             Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
                 input::handle_rename_key(&mut self.state, key_event);
@@ -1709,7 +1717,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[terminal]\ndefault_shell = \"nu\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\nredraw_on_focus_gained = false\n[ui.toast]\ndelivery = \"herdr\"\n",
+            "[terminal]\ndefault_shell = \"nu\"\nshell_mode = \"non_login\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\nredraw_on_focus_gained = false\n[ui.toast]\ndelivery = \"herdr\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1736,6 +1744,10 @@ mod tests {
         assert!(!app.state.redraw_on_focus_gained);
         assert!(app.state.request_client_config_reload);
         assert_eq!(app.state.default_shell, "nu");
+        assert_eq!(
+            app.state.shell_mode,
+            crate::config::ShellModeConfig::NonLogin
+        );
         assert_eq!(
             app.state.new_terminal_cwd,
             crate::config::NewTerminalCwdConfig::Home
@@ -1992,6 +2004,42 @@ mod tests {
             .config_diagnostic
             .as_deref()
             .is_some_and(|message| message.contains("invalid ui config")));
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn reload_config_preserves_invalid_terminal_section_but_applies_valid_ui() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("reload-config-invalid-terminal-section");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[terminal]\ndefault_shell = \"nu\"\nshell_mode = \"sideways\"\nnew_cwd = \"home\"\n[ui.toast]\ndelivery = \"terminal\"\n",
+        )
+        .unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        let original_default_shell = app.state.default_shell.clone();
+        let original_shell_mode = app.state.shell_mode;
+        let original_new_cwd = app.state.new_terminal_cwd.clone();
+        let report = app.reload_config();
+
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Partial);
+        assert_eq!(app.state.default_shell, original_default_shell);
+        assert_eq!(app.state.shell_mode, original_shell_mode);
+        assert_eq!(app.state.new_terminal_cwd, original_new_cwd);
+        assert_eq!(
+            app.state.toast_config.delivery,
+            crate::config::ToastDelivery::Terminal
+        );
+        assert!(app
+            .state
+            .config_diagnostic
+            .as_deref()
+            .is_some_and(|message| message.contains("invalid terminal config")));
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -3363,6 +3411,23 @@ last_pane = "prefix+tab"
                 b: 0x56,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn route_client_input_does_not_forward_incomplete_osc_introducer_to_pane() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("test");
+        let focused = workspace.focused_pane_id().unwrap();
+        let (runtime, mut rx) = TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+        workspace.tabs[0].runtimes.insert(focused, runtime);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.route_client_input(b"\x1b]".to_vec());
+
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
