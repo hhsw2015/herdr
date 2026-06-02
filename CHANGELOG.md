@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## [0.6.6-cmux1] - 2026-06-02
+
+### Changed
+- Merged upstream herdr master (47 commits) up to v0.6.6: custom command keybinding descriptions, login-shell-by-default on macOS panes (with `terminal.shell_mode` opt-out), OpenCode session-event idle handling fix, Claude Code stale permission-prompt fix, Codex stale `esc to interrupt` fix, sidebar git status workspace deduplication, distinct update vs restart messaging, large-session restored-pane handoff bounding, parent worktree close confirmation, kilo code CLI detection, github copilot CLI integration, ssh keepalive bridge fallback, `xtgettcap`/OSC 4 palette query answers, retained-render toast preservation, and pty actor refactor.
+- Resolved post-merge conflicts:
+  - `Cargo.toml` / `Cargo.lock`: bumped fork to `0.6.6-cmux1`.
+  - `src/app/runtime.rs`: kept fork's `drain_pending_state_events` alongside upstream's `workspace_git_refresh_items`.
+  - `src/pane.rs`: folded fork's `raw_pty_tx` broadcast tap and `RawPtyHistory` ring into upstream's new `PtyIoActor` `on_read` callback so RawPty subscribers and replay still see bytes before the emulator processes them.
+  - `src/server/clients.rs`: combined fork's RawPty filter with upstream's `is_full_app_client()` / `TerminalAttach` mode check on the render-pipeline subscriber filter.
+  - `src/server/headless.rs`: added `direct_attach_requested: false` to fork's `ClientConnected` test events and untangled four interleaved test blocks (`raw_pty_attach_forwards_raw_bytes_to_client`, `raw_pty_input_reaches_pane_runtime`, `raw_pty_client_exits_when_attached_pane_dies` and the new `app_client_marks_git_refresh_due_on_first_attach` / `pending_terminal_attach_client_does_not_enable_headless_git_refresh` / `writerless_app_client_does_not_enable_headless_git_refresh` / `semantic_app_client_marks_git_refresh_due_on_first_attach` cases).
+
 ## [0.6.5-cmux1] - 2026-05-30
 
 ### Changed
