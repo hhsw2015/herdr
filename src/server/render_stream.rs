@@ -100,6 +100,7 @@ impl ClientRenderState {
         match self {
             Self::Semantic { last_frame } => last_frame.as_ref(),
             Self::TerminalAnsi { blit_encoder, .. } => blit_encoder.last_frame(),
+            Self::RawPty => None,
         }
     }
 

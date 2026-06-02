@@ -534,6 +534,7 @@ pub fn run_raw_pty_attach(
         cell_height_px: 0,
         requested_encoding: RenderEncoding::RawPty,
         keybindings: crate::protocol::ClientKeybindings::Server,
+        launch_mode: crate::protocol::ClientLaunchMode::TerminalAttach,
     };
     protocol::write_message(&mut stream, &hello)
         .map_err(|e| io::Error::other(format!("hello write: {e}")))?;
