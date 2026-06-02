@@ -54,8 +54,10 @@ impl ClientRenderState {
         match self {
             Self::Semantic { last_frame } => {
                 if last_frame.as_ref() == Some(frame) {
+                    crate::render_prof::event("prepare_frame.semantic.skip_current");
                     return None;
                 }
+                crate::render_prof::event("prepare_frame.semantic.changed");
                 Some(PreparedRender {
                     message: ServerMessage::Frame(frame.clone()),
                     encoded: None,
@@ -63,10 +65,22 @@ impl ClientRenderState {
             }
             Self::TerminalAnsi { blit_encoder, seq } => {
                 if blit_encoder.is_current(frame) {
+                    crate::render_prof::event("prepare_frame.ansi.skip_current");
                     return None;
                 }
                 let mut encoded = blit_encoder.encode(frame, false);
+                crate::render_prof::event("prepare_frame.ansi.changed");
+                crate::render_prof::counter("prepare_frame.ansi.bytes", encoded.bytes.len() as u64);
+                if encoded.full {
+                    crate::render_prof::event("prepare_frame.ansi.full");
+                } else {
+                    crate::render_prof::event("prepare_frame.ansi.partial");
+                }
                 insert_graphics_before_sync_end(&mut encoded.bytes, &frame.graphics);
+                crate::render_prof::counter(
+                    "prepare_frame.graphics.bytes",
+                    frame.graphics.len() as u64,
+                );
                 Some(PreparedRender {
                     message: ServerMessage::Terminal(TerminalFrame {
                         seq: *seq + 1,
@@ -79,6 +93,13 @@ impl ClientRenderState {
                 })
             }
             Self::RawPty => None,
+        }
+    }
+
+    pub(crate) fn last_frame(&self) -> Option<&FrameData> {
+        match self {
+            Self::Semantic { last_frame } => last_frame.as_ref(),
+            Self::TerminalAnsi { blit_encoder, .. } => blit_encoder.last_frame(),
         }
     }
 
@@ -327,7 +348,7 @@ pub(crate) fn visible_hyperlinks(
     links
 }
 
-fn focused_terminal_cursor(
+pub(crate) fn focused_terminal_cursor(
     app_state: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> Option<CursorState> {

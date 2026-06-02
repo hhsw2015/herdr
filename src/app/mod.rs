@@ -5,6 +5,7 @@
 //! - `input.rs` — key/mouse → action translation
 
 pub(crate) mod actions;
+mod agent_resume;
 mod agents;
 mod api;
 mod api_helpers;
@@ -34,6 +35,7 @@ pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
@@ -97,12 +99,15 @@ pub struct App {
     pub(crate) copy_feedback_deadline: Option<Instant>,
     pub(crate) last_git_remote_status_refresh: Instant,
     pub(crate) git_refresh_in_flight: bool,
+    pub(crate) git_refresh_due_after_in_flight: bool,
+    pub(crate) git_status_cache: HashMap<std::path::PathBuf, crate::workspace::GitStatusCacheEntry>,
     pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_animation_tick: Option<Instant>,
     pub(crate) next_auto_update_check: Option<Instant>,
     pub(crate) agent_metadata_deadline: Option<Instant>,
+    pub(crate) pending_agent_resume_deadline: Option<Instant>,
     pub(crate) selection_autoscroll_deadline: Option<Instant>,
     pub(crate) selection_highlight_clear_deadline: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
@@ -490,6 +495,8 @@ impl App {
             sidebar_section_split,
             agent_panel_scope,
             mouse_capture: config.ui.mouse_capture,
+            right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
+            right_click_passthrough: None,
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             confirm_close: config.ui.confirm_close,
@@ -565,6 +572,8 @@ impl App {
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
             git_refresh_in_flight: false,
+            git_refresh_due_after_in_flight: false,
+            git_status_cache: HashMap::new(),
             last_sidebar_divider_click: None,
             last_pane_click: None,
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
@@ -572,6 +581,7 @@ impl App {
             next_auto_update_check: auto_updates_enabled(no_session)
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             agent_metadata_deadline: None,
+            pending_agent_resume_deadline: None,
             session_save_deadline: None,
             selection_autoscroll_deadline: None,
             selection_highlight_clear_deadline: None,
@@ -698,7 +708,7 @@ impl App {
             self.sync_session_save_schedule();
 
             let now = Instant::now();
-            if self.handle_scheduled_tasks(now) {
+            if self.handle_scheduled_tasks(now, needs_render) {
                 needs_render = true;
             }
 
@@ -812,6 +822,11 @@ impl App {
                         &self.terminal_runtimes,
                         cell_size,
                     )?;
+                }
+                self.sync_pending_agent_resume_deadline(now);
+                if self.start_pending_agent_resumes(self.pending_agent_resume_due(now)) {
+                    self.render_dirty.store(true, Ordering::Release);
+                    self.render_notify.notify_one();
                 }
                 self.last_render_at = Some(now);
                 needs_render = false;
@@ -1109,6 +1124,8 @@ impl App {
                 }
                 self.state.redraw_on_focus_gained = config.ui.redraw_on_focus_gained;
                 self.state.mouse_scroll_lines = config.ui.mouse_scroll_lines();
+                self.state.right_click_passthrough_modifiers =
+                    config.ui.right_click_passthrough_modifiers();
                 self.state.confirm_close = config.ui.confirm_close;
                 self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
                 self.state.show_agent_labels_on_pane_borders =
@@ -1465,6 +1482,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             results: Vec::new(),
+            cache_updates: Vec::new(),
         });
 
         assert!(!app.git_refresh_in_flight);
@@ -1487,6 +1505,7 @@ mod tests {
                 ahead_behind: Some((1, 0)),
                 space: None,
             }],
+            cache_updates: Vec::new(),
         });
 
         assert!(app.render_dirty.load(Ordering::Acquire));
@@ -1717,7 +1736,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[terminal]\ndefault_shell = \"nu\"\nshell_mode = \"non_login\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\nredraw_on_focus_gained = false\n[ui.toast]\ndelivery = \"herdr\"\n",
+            "[terminal]\ndefault_shell = \"nu\"\nshell_mode = \"non_login\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\nredraw_on_focus_gained = false\nright_click_passthrough_modifier = \"ctrl\"\n[ui.toast]\ndelivery = \"herdr\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1742,6 +1761,10 @@ mod tests {
             state::AgentPanelScope::CurrentWorkspace
         );
         assert!(!app.state.redraw_on_focus_gained);
+        assert_eq!(
+            app.state.right_click_passthrough_modifiers,
+            Some(KeyModifiers::CONTROL)
+        );
         assert!(app.state.request_client_config_reload);
         assert_eq!(app.state.default_shell, "nu");
         assert_eq!(
@@ -2706,9 +2729,11 @@ mod tests {
 
         assert_eq!(response["result"]["type"], "pane_info");
         assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id);
+        let response_cwd =
+            std::path::PathBuf::from(response["result"]["pane"]["cwd"].as_str().unwrap());
         assert_eq!(
-            response["result"]["pane"]["cwd"],
-            split_cwd.display().to_string()
+            crate::worktree::canonical_or_original(&response_cwd),
+            crate::worktree::canonical_or_original(&split_cwd)
         );
         assert_eq!(response["result"]["pane"]["focused"], false);
         assert_eq!(app.state.active, Some(0));
@@ -2887,6 +2912,47 @@ mod tests {
     }
 
     #[test]
+    fn pane_close_request_requires_confirmation_before_closing_parent_worktree_group() {
+        let mut app = test_app();
+        let mut parent = Workspace::test_new("api-pane-close-parent");
+        parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr".into(),
+            is_linked_worktree: false,
+        });
+        let mut child = Workspace::test_new("api-pane-close-child");
+        child.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-child".into(),
+            is_linked_worktree: true,
+        });
+        app.state.workspaces = vec![parent, child];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 1;
+
+        let target_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let target_pane_id = app.pane_info(0, target_pane).unwrap().pane_id;
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_close_parent_group".into(),
+            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+                pane_id: target_pane_id,
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["error"]["code"], "confirmation_required");
+        assert_eq!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.selected, 0);
+        assert_eq!(app.state.workspaces.len(), 2);
+    }
+
+    #[test]
     fn session_dirty_flag_schedules_debounced_save() {
         let mut app = test_app();
         app.no_session = false;
@@ -2921,7 +2987,7 @@ mod tests {
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
 
         assert_eq!(
-            app.next_headless_loop_deadline(now, false),
+            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
             app.session_save_deadline
         );
     }
@@ -2938,7 +3004,10 @@ mod tests {
         app.session_save_deadline = None;
         app.state.workspaces.clear();
 
-        assert_eq!(app.next_headless_loop_deadline(now, false), None);
+        assert_eq!(
+            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            None
+        );
     }
 
     #[test]
@@ -2946,7 +3015,7 @@ mod tests {
         let mut app = test_app();
         app.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
 
-        app.handle_scheduled_tasks(Instant::now());
+        app.handle_scheduled_tasks(Instant::now(), false);
 
         assert!(app.session_save_deadline.is_none());
     }

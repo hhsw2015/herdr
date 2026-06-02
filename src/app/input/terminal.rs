@@ -519,7 +519,7 @@ mod tests {
         let deadline = app
             .selection_highlight_clear_deadline
             .expect("highlight clear deadline");
-        assert!(app.handle_scheduled_tasks(deadline + std::time::Duration::from_millis(1)));
+        assert!(app.handle_scheduled_tasks(deadline + std::time::Duration::from_millis(1), false));
         assert!(app.state.selection.is_none());
     }
 
@@ -815,6 +815,7 @@ mod tests {
             label: "ctrl+alt+g".into(),
             command,
             action: crate::config::CustomCommandAction::Shell,
+            description: None,
         }];
 
         app.handle_terminal_key(TerminalKey::new(
@@ -863,6 +864,7 @@ mod tests {
             label: "ctrl+alt+g".into(),
             command: "printf direct-pane".into(),
             action: crate::config::CustomCommandAction::Pane,
+            description: None,
         }];
 
         app.handle_terminal_key(TerminalKey::new(

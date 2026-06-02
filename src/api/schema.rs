@@ -611,6 +611,7 @@ pub enum IntegrationTarget {
     Omp,
     Claude,
     Codex,
+    Copilot,
     Opencode,
     Hermes,
     Qodercli,
