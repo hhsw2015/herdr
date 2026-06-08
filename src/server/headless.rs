@@ -4603,6 +4603,41 @@ next_tab = ""
         );
     }
 
+    fn app_client_marks_git_refresh_due_on_first_attach(render_encoding: RenderEncoding) {
+        let mut server = test_headless_server();
+        server
+            .app
+            .state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("test"));
+        let future = Instant::now() + Duration::from_secs(60);
+        server.app.last_git_remote_status_refresh = future;
+        let (writer, _control_rx, _render_rx) = test_client_writer();
+
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 7,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding,
+            keybindings: None,
+            direct_attach_requested: false,
+            writer,
+        }));
+
+        assert!(server.has_app_client());
+        assert!(server
+            .app
+            .git_refresh_deadline()
+            .is_some_and(|deadline| deadline <= Instant::now()));
+    }
+
+    #[test]
+    fn terminal_ansi_app_client_enables_headless_git_refresh() {
+        app_client_marks_git_refresh_due_on_first_attach(RenderEncoding::TerminalAnsi);
+    }
+
     #[test]
     fn semantic_app_client_marks_git_refresh_due_on_first_attach() {
         app_client_marks_git_refresh_due_on_first_attach(RenderEncoding::SemanticFrame);

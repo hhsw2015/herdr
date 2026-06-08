@@ -460,6 +460,13 @@ fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
+#[cfg(not(unix))]
+fn api_bridge(_args: &[String]) -> std::io::Result<i32> {
+    eprintln!("api-bridge is not supported on this platform");
+    Ok(2)
+}
+
+#[cfg(unix)]
 fn api_bridge(args: &[String]) -> std::io::Result<i32> {
     // Bridge stdin <-> the active herdr API socket. Designed to be
     // exec'd over `ssh host herdr-cmux api-bridge` so a remote client

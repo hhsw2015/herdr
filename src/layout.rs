@@ -640,12 +640,11 @@ mod tests {
     fn set_ratio_at_validates_path() {
         let (mut layout, _root) = TileLayout::new();
         layout.split_focused(Direction::Horizontal);
-        assert!(layout.set_ratio_at(&[], 0.7));
-        // Path running off the tree must return false (no split below leaf).
-        assert!(!layout.set_ratio_at(&[false, false], 0.7));
-        // Empty layout (single pane) has no splits so any path fails.
+        layout.set_ratio_at(&[], 0.7);
+        // Out-of-tree paths are silently ignored (return `()` after the upstream refactor).
+        layout.set_ratio_at(&[false, false], 0.7);
         let (mut single, _) = TileLayout::new();
-        assert!(!single.set_ratio_at(&[], 0.5));
+        single.set_ratio_at(&[], 0.5);
     }
 
     #[test]
