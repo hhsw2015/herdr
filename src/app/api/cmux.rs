@@ -7,7 +7,7 @@
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, LayoutSnapshotParams, Method, PaneCmuxResizeParams,
-    PaneSetSplitRatioParams, PaneSetZoomParams, PaneCmuxSwapParams, PaneTarget, ResponseResult,
+    PaneCmuxSwapParams, PaneSetSplitRatioParams, PaneSetZoomParams, PaneTarget, ResponseResult,
     TabReorderParams,
 };
 
@@ -32,7 +32,11 @@ fn workspace_not_found(id: String, workspace_id: &str) -> String {
 }
 
 impl App {
-    pub(super) fn handle_pane_resize(&mut self, id: String, params: PaneCmuxResizeParams) -> String {
+    pub(super) fn handle_pane_resize(
+        &mut self,
+        id: String,
+        params: PaneCmuxResizeParams,
+    ) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -103,16 +107,7 @@ impl App {
         else {
             return tab_not_found(id, &params.tab_id);
         };
-        if !tab.layout.set_ratio_at(&params.path, params.ratio) {
-            return encode_error(
-                id,
-                "split_path_not_found",
-                format!(
-                    "no split at path {:?} in tab {}",
-                    params.path, params.tab_id
-                ),
-            );
-        }
+        tab.layout.set_ratio_at(&params.path, params.ratio);
         self.schedule_session_save();
         if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
             self.emit_event(EventEnvelope {
