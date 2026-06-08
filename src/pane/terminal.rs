@@ -248,6 +248,12 @@ impl PaneTerminal {
         self.ghostty.render(frame, area, show_cursor);
     }
 
+    /// Snapshot the visible viewport as plain text. One row per line,
+    /// trailing whitespace stripped. Backs the `pane.screen_text` RPC.
+    pub fn visible_screen_text(&self) -> Option<String> {
+        self.ghostty.visible_screen_text()
+    }
+
     pub fn collect_dirty_patch(
         &self,
         area_width: u16,
@@ -1092,6 +1098,12 @@ impl GhosttyPaneTerminal {
                     .ok()
             })
             .unwrap_or_default()
+    }
+
+    /// Snapshot of the visible viewport as plain text.
+    pub fn visible_screen_text(&self) -> Option<String> {
+        let core = self.core.lock().ok()?;
+        core.terminal.visible_screen_text().ok()
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {

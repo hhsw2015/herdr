@@ -2165,6 +2165,13 @@ impl PaneRuntime {
         (!ansi.trim().is_empty()).then_some(ansi)
     }
 
+    /// Snapshot the visible viewport as plain text. Independent of cmux:
+    /// reads libghostty-vt directly. One row per line, trailing whitespace
+    /// stripped, no ANSI / styling. Backs the `pane.screen_text` RPC.
+    pub fn visible_screen_text(&self) -> Option<String> {
+        self.terminal.visible_screen_text()
+    }
+
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
         self.terminal.extract_selection(selection)
     }

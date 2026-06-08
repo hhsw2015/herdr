@@ -612,6 +612,23 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
+    pub(super) fn handle_pane_screen_text(&mut self, id: String, target: PaneTarget) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let Some((pane, _)) = self.lookup_runtime(ws_idx, pane_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let text = pane.visible_screen_text().unwrap_or_default();
+        encode_success(
+            id,
+            ResponseResult::PaneScreenText {
+                pane_id: target.pane_id,
+                text,
+            },
+        )
+    }
+
     pub(super) fn handle_pane_read(&mut self, id: String, params: PaneReadParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);

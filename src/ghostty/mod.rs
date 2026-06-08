@@ -1009,6 +1009,36 @@ impl Terminal {
         self.get_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)
     }
 
+    /// Snapshot of the currently-visible viewport as plain text. One row per
+    /// line, trailing whitespace stripped, no ANSI / styling. Used by the
+    /// `pane.screen_text` RPC so callers can reason about what the user
+    /// actually sees right now (vs. the full scrollback that `pane.read`
+    /// returns). Independent of cmux: built directly on libghostty-vt.
+    pub fn visible_screen_text(&self) -> Result<String, Error> {
+        let cols = self.cols()?;
+        let rows = self.rows()?;
+        let mut out = String::with_capacity(usize::from(rows) * usize::from(cols));
+        for y in 0..u32::from(rows) {
+            let mut row = String::new();
+            for x in 0..cols {
+                match self.viewport_graphemes_and_style(x, y) {
+                    Ok((graphemes, _)) => {
+                        for cp in graphemes {
+                            if let Some(ch) = char::from_u32(cp) {
+                                row.push(ch);
+                            }
+                        }
+                    }
+                    Err(_) => row.push(' '),
+                }
+            }
+            let trimmed = row.trim_end_matches(' ');
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
     pub fn rows(&self) -> Result<u16, Error> {
         self.get_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)
     }

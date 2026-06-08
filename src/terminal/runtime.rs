@@ -290,6 +290,10 @@ impl TerminalRuntime {
         self.0.snapshot_history()
     }
 
+    pub fn visible_screen_text(&self) -> Option<String> {
+        self.0.visible_screen_text()
+    }
+
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
         self.0.extract_selection(selection)
     }

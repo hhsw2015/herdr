@@ -102,6 +102,8 @@ pub enum Method {
     PaneSendInput(PaneSendInputParams),
     #[serde(rename = "pane.read")]
     PaneRead(PaneReadParams),
+    #[serde(rename = "pane.screen_text")]
+    PaneScreenText(PaneTarget),
     #[serde(rename = "pane.report_agent")]
     PaneReportAgent(PaneReportAgentParams),
     #[serde(rename = "pane.report_agent_session")]
@@ -687,6 +689,10 @@ pub enum ResponseResult {
         protocol: u32,
         #[serde(default)]
         capabilities: Option<ServerCapabilities>,
+    },
+    PaneScreenText {
+        pane_id: String,
+        text: String,
     },
     WorkspaceInfo {
         workspace: WorkspaceInfo,
