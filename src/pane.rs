@@ -11,7 +11,9 @@ use portable_pty::CommandBuilder;
 #[cfg(all(test, unix))]
 use portable_pty::{native_pty_system, PtySize};
 use ratatui::{layout::Rect, Frame};
-use tokio::sync::{broadcast, mpsc, watch, Notify};
+#[cfg(test)]
+use tokio::sync::watch;
+use tokio::sync::{broadcast, mpsc, Notify};
 use tracing::{debug, error, info, warn};
 
 use crate::detect::{Agent, AgentState};

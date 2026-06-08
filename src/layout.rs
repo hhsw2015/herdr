@@ -548,6 +548,7 @@ fn set_ratio_at(node: &mut Node, path: &[bool], new_ratio: f32) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn swap_panes(node: &mut Node, a: PaneId, b: PaneId) {
     match node {
         Node::Pane(id) => {
