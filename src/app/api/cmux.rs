@@ -6,8 +6,8 @@
 //! surface; they exist only for the cmux mirror integration.
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, LayoutSnapshotParams, Method, PaneResizeParams,
-    PaneSetSplitRatioParams, PaneSetZoomParams, PaneSwapParams, PaneTarget, ResponseResult,
+    EventData, EventEnvelope, EventKind, LayoutSnapshotParams, Method, PaneCmuxResizeParams,
+    PaneSetSplitRatioParams, PaneSetZoomParams, PaneCmuxSwapParams, PaneTarget, ResponseResult,
     TabReorderParams,
 };
 
@@ -32,7 +32,7 @@ fn workspace_not_found(id: String, workspace_id: &str) -> String {
 }
 
 impl App {
-    pub(super) fn handle_pane_resize(&mut self, id: String, params: PaneResizeParams) -> String {
+    pub(super) fn handle_pane_resize(&mut self, id: String, params: PaneCmuxResizeParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -123,7 +123,7 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_pane_swap(&mut self, id: String, params: PaneSwapParams) -> String {
+    pub(super) fn handle_pane_swap(&mut self, id: String, params: PaneCmuxSwapParams) -> String {
         let Some((ws_idx_a, pane_a)) = self.parse_pane_id(&params.a_pane_id) else {
             return pane_not_found(id, &params.a_pane_id);
         };
@@ -346,10 +346,10 @@ impl App {
     /// the Result enum past clippy's result-large-err threshold.
     pub(super) fn dispatch_cmux_method(&mut self, id: String, method: Method) -> Option<String> {
         match method {
-            Method::PaneResize(params) => Some(self.handle_pane_resize(id, params)),
+            Method::PaneCmuxResize(params) => Some(self.handle_pane_resize(id, params)),
             Method::LayoutSnapshot(params) => Some(self.handle_layout_snapshot(id, params)),
             Method::PaneSetSplitRatio(params) => Some(self.handle_pane_set_split_ratio(id, params)),
-            Method::PaneSwap(params) => Some(self.handle_pane_swap(id, params)),
+            Method::PaneCmuxSwap(params) => Some(self.handle_pane_swap(id, params)),
             Method::PaneFocus(target) => Some(self.handle_pane_focus(id, target)),
             Method::PaneSetZoom(params) => Some(self.handle_pane_set_zoom(id, params)),
             Method::TabReorder(params) => Some(self.handle_tab_reorder(id, params)),

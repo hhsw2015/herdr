@@ -114,14 +114,14 @@ pub enum Method {
     PaneReleaseAgent(PaneReleaseAgentParams),
     #[serde(rename = "pane.close")]
     PaneClose(PaneTarget),
-    #[serde(rename = "pane.resize")]
-    PaneResize(PaneResizeParams),
+    #[serde(rename = "pane.cmux_resize")]
+    PaneCmuxResize(PaneCmuxResizeParams),
     #[serde(rename = "layout.snapshot")]
     LayoutSnapshot(LayoutSnapshotParams),
     #[serde(rename = "pane.set_split_ratio")]
     PaneSetSplitRatio(PaneSetSplitRatioParams),
-    #[serde(rename = "pane.swap")]
-    PaneSwap(PaneSwapParams),
+    #[serde(rename = "pane.cmux_swap")]
+    PaneCmuxSwap(PaneCmuxSwapParams),
     #[serde(rename = "pane.focus")]
     PaneFocus(PaneTarget),
     #[serde(rename = "pane.set_zoom")]
@@ -201,7 +201,7 @@ pub struct PaneTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneResizeParams {
+pub struct PaneCmuxResizeParams {
     pub pane_id: String,
     pub cols: u16,
     pub rows: u16,
@@ -234,7 +234,7 @@ pub struct PaneSetZoomParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneSwapParams {
+pub struct PaneCmuxSwapParams {
     pub a_pane_id: String,
     pub b_pane_id: String,
 }
@@ -1700,13 +1700,13 @@ mod tests {
     fn pane_swap_request_round_trips() {
         let request = Request {
             id: "req_swap".into(),
-            method: Method::PaneSwap(PaneSwapParams {
+            method: Method::PaneCmuxSwap(PaneCmuxSwapParams {
                 a_pane_id: "w1-1".into(),
                 b_pane_id: "w1-2".into(),
             }),
         };
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("\"method\":\"pane.swap\""));
+        assert!(json.contains("\"method\":\"pane.cmux_swap\""));
         let restored: Request = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, request);
     }
