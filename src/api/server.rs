@@ -279,7 +279,7 @@ fn handle_connection(
                     }
                     return Err(write_err);
                 }
-                crate::logging::api_request_completed(&request_id, method, response_outcome);
+                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
                 continue;
             }
             Method::PaneWaitForIdle(params) => {
@@ -316,7 +316,7 @@ fn handle_connection(
                     }
                     return Err(write_err);
                 }
-                crate::logging::api_request_completed(&request_id, method, response_outcome);
+                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
                 continue;
             }
             Method::PaneWaitForOutput(params) => {
