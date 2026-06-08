@@ -604,8 +604,10 @@ fn raw_pty_attach(args: &[String]) -> std::io::Result<i32> {
     {
         let _ = (terminal_id, takeover, cols, rows);
         eprintln!("raw-pty-attach is not supported on this platform");
+        #[allow(clippy::needless_return)]
         return Ok(2);
     }
+    #[allow(unreachable_code)]
     Ok(0)
 }
 
