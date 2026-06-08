@@ -16,14 +16,14 @@ use crate::protocol::CellData;
 use super::{
     input::{
         ghostty_key_event_from_terminal_key, ghostty_mouse_encoder_for_terminal,
-        ghostty_mouse_event_from_button_kind, ghostty_mouse_event_from_wheel_kind,
-        ghostty_prefers_herdr_text_encoding,
+        ghostty_mouse_event_from_button_kind, ghostty_mouse_event_from_motion_kind,
+        ghostty_mouse_event_from_wheel_kind, ghostty_prefers_herdr_text_encoding,
     },
     kitty_keyboard::KittyKeyboardTracker,
     osc::{
         contains_scrollback_clear_sequence, current_transient_default_color_owner,
         maybe_filter_primary_screen_scrollback_clear, restore_host_terminal_theme_if_needed,
-        write_host_terminal_theme, DefaultColorEvent, DefaultColorEventTracker,
+        write_host_terminal_theme, CwdOscTracker, DefaultColorEvent, DefaultColorEventTracker,
         DefaultColorOscTracker, DefaultColorQuery, DefaultColorTrackedEvent, Osc52Forwarder,
     },
     xtgettcap::{XtgettcapQueryTracker, XtgettcapResponse},
@@ -101,6 +101,7 @@ pub(crate) struct ProcessBytesResult {
     pub request_render: bool,
     pub render_delay: Option<Duration>,
     pub clipboard_writes: Vec<Vec<u8>>,
+    pub reported_cwd: Option<std::path::PathBuf>,
     pub terminal_responses: Vec<Bytes>,
 }
 
@@ -123,6 +124,7 @@ pub(crate) struct GhosttyPaneCore {
     pub child_default_foreground_changed: bool,
     pub child_default_background_changed: bool,
     pub osc52_forwarder: Osc52Forwarder,
+    pub cwd_osc_tracker: CwdOscTracker,
     pub xtgettcap_query_tracker: XtgettcapQueryTracker,
 }
 
@@ -146,9 +148,15 @@ impl PaneTerminal {
             .process_pty_bytes(pane_id, shell_pid, bytes, response_writer)
     }
 
-    pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
+    pub fn resize(
+        &self,
+        rows: u16,
+        cols: u16,
+        cell_width_px: u32,
+        cell_height_px: u32,
+    ) -> Vec<Bytes> {
         self.ghostty
-            .resize(rows, cols, cell_width_px, cell_height_px);
+            .resize(rows, cols, cell_width_px, cell_height_px)
     }
 
     pub fn scroll_up(&self, lines: usize) {
@@ -177,6 +185,10 @@ impl PaneTerminal {
 
     pub fn cursor_state(&self) -> Option<TerminalCursorState> {
         self.ghostty.cursor_state()
+    }
+
+    pub fn synchronized_output_active(&self) -> bool {
+        self.ghostty.synchronized_output_active()
     }
 
     pub fn visible_text(&self) -> String {
@@ -279,6 +291,7 @@ impl PaneTerminal {
         self.ghostty.keyboard_protocol().unwrap_or(fallback)
     }
 
+    #[cfg(unix)]
     pub fn kitty_keyboard_state_ansi(&self) -> Option<String> {
         self.ghostty
             .kitty_keyboard_state_ansi()
@@ -302,6 +315,17 @@ impl PaneTerminal {
     ) -> Option<Vec<u8>> {
         self.ghostty
             .encode_mouse_button(kind, column, row, modifiers)
+    }
+
+    pub fn encode_mouse_motion(
+        &self,
+        kind: crossterm::event::MouseEventKind,
+        column: u16,
+        row: u16,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        self.ghostty
+            .encode_mouse_motion(kind, column, row, modifiers)
     }
 
     pub fn encode_mouse_wheel(
@@ -356,6 +380,7 @@ impl GhosttyPaneTerminal {
                 child_default_foreground_changed: false,
                 child_default_background_changed: false,
                 osc52_forwarder: Osc52Forwarder::default(),
+                cwd_osc_tracker: CwdOscTracker::default(),
                 xtgettcap_query_tracker: XtgettcapQueryTracker::default(),
             }),
             key_encoder: Mutex::new(key_encoder),
@@ -423,6 +448,7 @@ impl GhosttyPaneTerminal {
                 request_render: false,
                 render_delay: None,
                 clipboard_writes: Vec::new(),
+                reported_cwd: None,
                 terminal_responses: Vec::new(),
             };
         };
@@ -440,6 +466,8 @@ impl GhosttyPaneTerminal {
 
         core.osc52_forwarder.observe(bytes);
         let clipboard_writes = core.osc52_forwarder.drain_pending();
+        core.cwd_osc_tracker.observe(bytes);
+        let reported_cwd = core.cwd_osc_tracker.drain_latest();
 
         let alternate_screen = core
             .terminal
@@ -511,6 +539,7 @@ impl GhosttyPaneTerminal {
             request_render,
             render_delay,
             clipboard_writes,
+            reported_cwd,
             terminal_responses,
         }
     }
@@ -580,6 +609,7 @@ impl GhosttyPaneTerminal {
         }
     }
 
+    #[cfg(unix)]
     pub fn seed_handoff_input_state(&self, input_state: InputState) {
         let Ok(mut core) = self.core.lock() else {
             return;
@@ -651,6 +681,7 @@ impl GhosttyPaneTerminal {
         }
     }
 
+    #[cfg(unix)]
     pub fn seed_keyboard_protocol_flags(&self, flags: u16) {
         if flags == 0 {
             return;
@@ -658,6 +689,7 @@ impl GhosttyPaneTerminal {
         self.seed_keyboard_protocol_ansi(&format!("\x1b[>{flags}u"));
     }
 
+    #[cfg(unix)]
     pub fn seed_keyboard_protocol_ansi(&self, ansi: &str) {
         if ansi.is_empty() {
             return;
@@ -672,7 +704,13 @@ impl GhosttyPaneTerminal {
         }
     }
 
-    pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
+    pub fn resize(
+        &self,
+        rows: u16,
+        cols: u16,
+        cell_width_px: u32,
+        cell_height_px: u32,
+    ) -> Vec<Bytes> {
         if let Ok(mut core) = self.core.lock() {
             let offset_from_bottom = core
                 .terminal
@@ -704,6 +742,7 @@ impl GhosttyPaneTerminal {
             let _ = core
                 .terminal
                 .resize(cols, rows, cell_width_px, cell_height_px);
+            let terminal_responses = self.drain_pending_pty_responses();
 
             let bottom_is_blank = ghostty_detection_text(&core)
                 .map(|text| text.trim().is_empty())
@@ -726,6 +765,9 @@ impl GhosttyPaneTerminal {
                     remaining -= 1;
                 }
             }
+            terminal_responses
+        } else {
+            Vec::new()
         }
     }
 
@@ -779,6 +821,7 @@ impl GhosttyPaneTerminal {
         ))
     }
 
+    #[cfg(unix)]
     pub fn kitty_keyboard_state_ansi(&self) -> Option<String> {
         let core = self.core.lock().ok()?;
         core.kitty_keyboard.replay_ansi()
@@ -871,6 +914,18 @@ impl GhosttyPaneTerminal {
         })
     }
 
+    pub fn synchronized_output_active(&self) -> bool {
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| {
+                core.terminal
+                    .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
     pub fn encode_terminal_key(
         &self,
         key: crate::input::TerminalKey,
@@ -905,7 +960,31 @@ impl GhosttyPaneTerminal {
         };
         let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
         let event = ghostty_mouse_event_from_button_kind(kind, column, row, modifiers)?;
-        encoder.encode(&event).ok()
+        encoder
+            .encode(&event)
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
+    }
+
+    pub fn encode_mouse_motion(
+        &self,
+        kind: crossterm::event::MouseEventKind,
+        column: u16,
+        row: u16,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        let Ok(core) = self.core.lock() else {
+            return None;
+        };
+        if !core.terminal.mode_get(MODE_MOUSE_ANY_MOTION).ok()? {
+            return None;
+        }
+        let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
+        let event = ghostty_mouse_event_from_motion_kind(kind, column, row, modifiers)?;
+        encoder
+            .encode(&event)
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
     }
 
     pub fn encode_mouse_wheel(
@@ -920,7 +999,10 @@ impl GhosttyPaneTerminal {
         };
         let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
         let event = ghostty_mouse_event_from_wheel_kind(kind, column, row, modifiers)?;
-        encoder.encode(&event).ok()
+        encoder
+            .encode(&event)
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
     }
 
     pub fn visible_text(&self) -> String {
@@ -1050,7 +1132,7 @@ impl GhosttyPaneTerminal {
                 Ok(rows) => rows,
                 Err(_) => return,
             };
-            let mut grapheme_bytes = Vec::new();
+            let mut grapheme_codepoints = Vec::new();
             let mut symbol_scratch = String::new();
             let mut y = 0u16;
             while y < area.height && rows.next() {
@@ -1073,7 +1155,7 @@ impl GhosttyPaneTerminal {
                         &cells,
                         basic.wide,
                         hide_kitty_placeholders,
-                        &mut grapheme_bytes,
+                        &mut grapheme_codepoints,
                         &mut symbol_scratch,
                     ) {
                         Ok(symbol) => symbol,
@@ -1218,7 +1300,7 @@ fn ghostty_collect_dirty_patch(
     let Ok(mut rows) = render_state.populate_row_iterator(&mut row_iterator) else {
         fallback!("populate_rows_error");
     };
-    let mut grapheme_bytes = Vec::new();
+    let mut grapheme_codepoints = Vec::new();
     let mut symbol_scratch = String::new();
     let mut patch_rows = Vec::new();
     let mut y = 0u16;
@@ -1256,7 +1338,7 @@ fn ghostty_collect_dirty_patch(
                     &cells,
                     basic.wide,
                     hide_kitty_placeholders,
-                    &mut grapheme_bytes,
+                    &mut grapheme_codepoints,
                     &mut symbol_scratch,
                 ) {
                     Ok(symbol) => symbol.to_owned(),
@@ -1531,7 +1613,7 @@ fn ghostty_buffer_symbol_into<'a>(
     cells: &crate::ghostty::RowCellIter<'_>,
     wide: crate::ghostty::CellWide,
     hide_kitty_placeholders: bool,
-    grapheme_bytes: &mut Vec<u8>,
+    grapheme_codepoints: &mut Vec<u32>,
     symbol_scratch: &'a mut String,
 ) -> Result<&'a str, crate::ghostty::Error> {
     symbol_scratch.clear();
@@ -1539,7 +1621,7 @@ fn ghostty_buffer_symbol_into<'a>(
         crate::ghostty::CellWide::SpacerTail => {}
         crate::ghostty::CellWide::SpacerHead => symbol_scratch.push(' '),
         crate::ghostty::CellWide::Narrow | crate::ghostty::CellWide::Wide => {
-            cells.grapheme_text_into(grapheme_bytes, symbol_scratch)?;
+            cells.grapheme_text_into(grapheme_codepoints, symbol_scratch)?;
             let hidden_kitty_placeholder = hide_kitty_placeholders
                 && symbol_scratch.chars().next().map(u32::from)
                     == Some(crate::ghostty::KITTY_UNICODE_PLACEHOLDER);
@@ -2120,6 +2202,7 @@ mod tests {
         assert_eq!(encoded, b"\x1bOA");
     }
 
+    #[cfg(unix)]
     #[test]
     fn ghostty_seed_handoff_input_state_restores_input_modes() {
         let (tx, _rx) = mpsc::channel(4);
@@ -2230,6 +2313,7 @@ mod tests {
         assert_eq!(encoded, b"\x1b[13;2u");
     }
 
+    #[cfg(unix)]
     #[test]
     fn ghostty_seed_keyboard_protocol_flags_restores_shift_enter_encoding() {
         let (tx, _rx) = mpsc::channel(4);
@@ -2247,6 +2331,7 @@ mod tests {
         assert_eq!(encoded, b"\x1b[13;2u");
     }
 
+    #[cfg(unix)]
     #[test]
     fn ghostty_keyboard_protocol_state_replays_nested_stack() {
         let (tx, _rx) = mpsc::channel(4);
@@ -2372,8 +2457,61 @@ mod tests {
     }
 
     #[test]
+    fn ghostty_mouse_drag_without_motion_reporting_is_not_forwarded() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        terminal.write(b"\x1b[?1000h\x1b[?1006h");
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+
+        let encoded = pane.encode_mouse_button(
+            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            4,
+            6,
+            crossterm::event::KeyModifiers::empty(),
+        );
+
+        assert_eq!(encoded, None);
+    }
+
+    #[test]
+    fn ghostty_mouse_moved_encoding_uses_any_motion_state() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        terminal.write(b"\x1b[?1003h\x1b[?1006h");
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+
+        let encoded = pane.encode_mouse_motion(
+            crossterm::event::MouseEventKind::Moved,
+            4,
+            6,
+            crossterm::event::KeyModifiers::empty(),
+        );
+
+        assert_eq!(encoded.as_deref(), Some(&b"\x1b[<35;5;7M"[..]));
+    }
+
+    #[test]
+    fn ghostty_mouse_sgr_pixels_downgrades_to_cell_coordinates() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+
+        let encoded = pane.encode_mouse_motion(
+            crossterm::event::MouseEventKind::Moved,
+            4,
+            6,
+            crossterm::event::KeyModifiers::empty(),
+        );
+
+        assert_eq!(encoded.as_deref(), Some(&b"\x1b[<35;5;7M"[..]));
+    }
+
+    #[test]
     fn ghostty_normalize_buffer_symbol_prefers_grapheme_width_when_metadata_disagrees() {
         const WIDE_GRAPHEME: &str = "🙂";
+        const FLAG_GRAPHEME: &str = "🇧🇷";
+        const FAMILY_GRAPHEME: &str = "👨‍👩‍👧";
         const VS16_GRAPHEME: &str = "⚠️";
         const EMOJI_GRAPHEME: &str = "💳";
 
@@ -2384,6 +2522,14 @@ mod tests {
         assert_eq!(
             ghostty_normalize_buffer_symbol("a", crate::ghostty::CellWide::Wide),
             "  "
+        );
+        assert_eq!(
+            ghostty_normalize_buffer_symbol(FLAG_GRAPHEME, crate::ghostty::CellWide::Wide),
+            FLAG_GRAPHEME
+        );
+        assert_eq!(
+            ghostty_normalize_buffer_symbol(FAMILY_GRAPHEME, crate::ghostty::CellWide::Wide),
+            FAMILY_GRAPHEME
         );
         assert_eq!(
             ghostty_normalize_buffer_symbol("⌨️", crate::ghostty::CellWide::Narrow),
@@ -2404,6 +2550,74 @@ mod tests {
         assert_eq!(
             ghostty_normalize_buffer_symbol("xx", crate::ghostty::CellWide::SpacerHead),
             " "
+        );
+    }
+
+    fn render_cells_to_symbols(
+        terminal: &mut crate::ghostty::Terminal,
+    ) -> Vec<(crate::ghostty::CellWide, String)> {
+        let mut render_state = crate::ghostty::RenderState::new().unwrap();
+        render_state.update(terminal).unwrap();
+
+        let mut row_iterator = crate::ghostty::RowIterator::new().unwrap();
+        let mut rows = render_state
+            .populate_row_iterator(&mut row_iterator)
+            .unwrap();
+        let mut row_cells = crate::ghostty::RowCells::new().unwrap();
+        let mut grapheme_codepoints = Vec::new();
+        let mut symbol_scratch = String::new();
+        let mut out = Vec::new();
+
+        if rows.next() {
+            let mut cells = rows.populate_cells(&mut row_cells).unwrap();
+            while cells.next() {
+                let wide = cells.wide().unwrap_or(crate::ghostty::CellWide::Narrow);
+                let symbol = ghostty_buffer_symbol_into(
+                    &cells,
+                    wide,
+                    false,
+                    &mut grapheme_codepoints,
+                    &mut symbol_scratch,
+                )
+                .unwrap()
+                .to_string();
+                out.push((wide, symbol));
+            }
+        }
+
+        out
+    }
+
+    #[test]
+    fn grapheme_cluster_mode_renders_flag_emoji_in_single_wide_cell() {
+        let mut terminal = crate::ghostty::Terminal::new(40, 1, 0).unwrap();
+        terminal.enable_grapheme_cluster_mode().unwrap();
+        terminal.write("🇧🇷".as_bytes());
+
+        let cells = render_cells_to_symbols(&mut terminal);
+
+        assert!(
+            cells
+                .iter()
+                .any(|(wide, symbol)| *wide == crate::ghostty::CellWide::Wide && symbol == "🇧🇷"),
+            "expected a wide cell containing the full flag grapheme, got {cells:?}"
+        );
+    }
+
+    #[test]
+    fn grapheme_cluster_mode_renders_zwj_family_in_single_wide_cell() {
+        let mut terminal = crate::ghostty::Terminal::new(40, 1, 0).unwrap();
+        terminal.enable_grapheme_cluster_mode().unwrap();
+        terminal.write("👨\u{200d}👩\u{200d}👧".as_bytes());
+
+        let cells = render_cells_to_symbols(&mut terminal);
+
+        assert!(
+            cells
+                .iter()
+                .any(|(wide, symbol)| *wide == crate::ghostty::CellWide::Wide
+                    && symbol == "👨\u{200d}👩\u{200d}👧"),
+            "expected a wide cell containing the full ZWJ grapheme, got {cells:?}"
         );
     }
 
@@ -2577,6 +2791,21 @@ mod tests {
 
         assert!(pane.detection_text().trim().is_empty());
         assert!(pane.recent_text(3).trim().is_empty());
+    }
+
+    #[test]
+    fn resize_returns_in_band_size_report_response() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        terminal.mode_set(2048, true).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+
+        let responses = pane.resize(40, 100, 9, 18);
+
+        assert_eq!(
+            responses,
+            vec![Bytes::from_static(b"\x1B[48;40;100;720;900t")]
+        );
     }
 
     #[test]

@@ -39,11 +39,31 @@ pub(super) fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
         Agent::Qodercli => qodercli::detect(screen_content),
     };
 
+    let skip_state_update = should_skip_state_update(agent, screen_content);
+    if skip_state_update {
+        return AgentDetection {
+            state,
+            skip_state_update: true,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+        };
+    }
+
     AgentDetection {
         state,
+        skip_state_update: false,
         visible_blocker: has_visible_blocker(agent, screen_content, state),
         visible_idle: has_visible_idle(agent, screen_content, state),
         visible_working: has_visible_working(agent, screen_content, state),
+    }
+}
+
+pub(super) fn should_skip_state_update(agent: Agent, content: &str) -> bool {
+    match agent {
+        Agent::Claude => claude_code::is_transcript_viewer(content),
+        Agent::Codex => codex::is_transcript_viewer(content),
+        _ => false,
     }
 }
 
@@ -59,6 +79,7 @@ fn has_visible_blocker(agent: Agent, content: &str, state: AgentState) -> bool {
         // is known to be structural and live.
         Agent::Claude => claude_code::has_visible_blocker(content),
         Agent::Codex => codex::has_visible_blocker(content),
+        Agent::Kimi => kimi::has_visible_blocker(content),
         _ => false,
     }
 }
@@ -71,6 +92,7 @@ fn has_visible_idle(agent: Agent, content: &str, state: AgentState) -> bool {
     match agent {
         Agent::Claude => claude_code::has_prompt_box(content),
         Agent::Codex => codex::has_prompt(content),
+        Agent::Kimi => kimi::has_prompt_box(content),
         _ => false,
     }
 }
@@ -83,6 +105,7 @@ fn has_visible_working(agent: Agent, content: &str, state: AgentState) -> bool {
     match agent {
         Agent::Claude => claude_code::has_working_chrome(content),
         Agent::Codex => codex::has_visible_working(content),
+        Agent::Kimi => kimi::has_visible_working(content),
         _ => false,
     }
 }

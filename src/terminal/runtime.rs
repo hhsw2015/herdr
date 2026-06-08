@@ -221,6 +221,7 @@ impl TerminalRuntime {
         Self(runtime)
     }
 
+    #[cfg(unix)]
     pub fn nudge_child_redraw_after_handoff(&self) {
         self.0.nudge_child_redraw_after_handoff();
     }
@@ -255,6 +256,10 @@ impl TerminalRuntime {
         show_cursor: bool,
     ) -> Option<crate::pane::TerminalCursorState> {
         self.0.cursor_state(area, show_cursor)
+    }
+
+    pub fn synchronized_output_active(&self) -> bool {
+        self.0.synchronized_output_active()
     }
 
     pub fn visible_text(&self) -> String {
@@ -351,6 +356,16 @@ impl TerminalRuntime {
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.0.encode_mouse_button(kind, column, row, modifiers)
+    }
+
+    pub fn encode_mouse_motion(
+        &self,
+        kind: crossterm::event::MouseEventKind,
+        column: u16,
+        row: u16,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        self.0.encode_mouse_motion(kind, column, row, modifiers)
     }
 
     pub fn encode_mouse_wheel(
