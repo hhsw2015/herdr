@@ -589,7 +589,16 @@ fn raw_pty_attach(args: &[String]) -> std::io::Result<i32> {
         }
         idx += 1;
     }
-    crate::client::run_raw_pty_attach(terminal_id.clone(), takeover, cols, rows)?;
+    #[cfg(unix)]
+    {
+        crate::client::run_raw_pty_attach(terminal_id.clone(), takeover, cols, rows)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (terminal_id, takeover, cols, rows);
+        eprintln!("raw-pty-attach is not supported on this platform");
+        return Ok(2);
+    }
     Ok(0)
 }
 

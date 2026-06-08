@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
+use interprocess::TryClone as _;
 use tracing::{debug, error, info, warn};
 
 #[cfg(all(test, unix))]

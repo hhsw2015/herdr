@@ -630,12 +630,14 @@ pub fn run_client() -> io::Result<()> {
 /// PoC scope: no resize, no terminal raw-mode setup. Initial size is
 /// fixed at the cols/rows passed in. A future patch will add a side
 /// channel (control fd) for SIGWINCH-style notifications.
+#[cfg(unix)]
 pub fn run_raw_pty_attach(
     terminal_id: String,
     takeover: bool,
     cols: u16,
     rows: u16,
 ) -> io::Result<()> {
+    use std::os::unix::net::UnixStream;
     let socket_path = client_socket_path();
     let mut stream = UnixStream::connect(&socket_path).map_err(|err| {
         eprintln!("herdr: connect: {err}");
