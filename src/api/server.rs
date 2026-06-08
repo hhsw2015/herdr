@@ -15,7 +15,7 @@ use crate::api::schema::{
     ErrorBody, ErrorResponse, Method, Request, ResponseResult, ServerCapabilities, SuccessResponse,
 };
 use crate::api::subscriptions::ActiveSubscription;
-use crate::api::wait::wait_for_output;
+use crate::api::wait::{wait_for_idle, wait_for_output, wait_for_text};
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
     bind_local_listener, remove_socket_file_if_owned, socket_file_identity, LocalStream,
@@ -245,6 +245,80 @@ fn handle_connection(
                 }
                 return result;
             }
+            Method::PaneWaitForText(params) => {
+                let wait_result =
+                    wait_for_text(request_id.clone(), params, &mut stream, api_tx, running);
+                let Some(response) = (match wait_result {
+                    Ok(value) => value,
+                    Err(err) => {
+                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
+                        let envelope = ErrorResponse {
+                            id: request_id.clone(),
+                            error: ErrorBody {
+                                code: "wait_for_text_failed".into(),
+                                message: err.to_string(),
+                            },
+                        };
+                        if let Err(write_err) =
+                            write_json_line_allow_disconnect(&mut stream, &envelope)
+                        {
+                            if is_connection_closed_error(&write_err) {
+                                return Ok(());
+                            }
+                            return Err(write_err);
+                        }
+                        continue;
+                    }
+                }) else {
+                    return Ok(());
+                };
+                let response_outcome = api_response_outcome(&response);
+                if let Err(write_err) = write_json_line(&mut stream, &response) {
+                    if is_connection_closed_error(&write_err) {
+                        return Ok(());
+                    }
+                    return Err(write_err);
+                }
+                crate::logging::api_request_completed(&request_id, method, response_outcome);
+                continue;
+            }
+            Method::PaneWaitForIdle(params) => {
+                let wait_result =
+                    wait_for_idle(request_id.clone(), params, &mut stream, api_tx, running);
+                let Some(response) = (match wait_result {
+                    Ok(value) => value,
+                    Err(err) => {
+                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
+                        let envelope = ErrorResponse {
+                            id: request_id.clone(),
+                            error: ErrorBody {
+                                code: "wait_for_idle_failed".into(),
+                                message: err.to_string(),
+                            },
+                        };
+                        if let Err(write_err) =
+                            write_json_line_allow_disconnect(&mut stream, &envelope)
+                        {
+                            if is_connection_closed_error(&write_err) {
+                                return Ok(());
+                            }
+                            return Err(write_err);
+                        }
+                        continue;
+                    }
+                }) else {
+                    return Ok(());
+                };
+                let response_outcome = api_response_outcome(&response);
+                if let Err(write_err) = write_json_line(&mut stream, &response) {
+                    if is_connection_closed_error(&write_err) {
+                        return Ok(());
+                    }
+                    return Err(write_err);
+                }
+                crate::logging::api_request_completed(&request_id, method, response_outcome);
+                continue;
+            }
             Method::PaneWaitForOutput(params) => {
                 let wait_result =
                     wait_for_output(request_id.clone(), params, &mut stream, api_tx, running);
@@ -422,6 +496,8 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::EventsSubscribe(_) => "events.subscribe",
         Method::EventsWait(_) => "events.wait",
         Method::PaneWaitForOutput(_) => "pane.wait_for_output",
+        Method::PaneWaitForText(_) => "pane.wait_for_text",
+        Method::PaneWaitForIdle(_) => "pane.wait_for_idle",
         Method::IntegrationInstall(_) => "integration.install",
         Method::IntegrationUninstall(_) => "integration.uninstall",
         Method::PaneCmuxResize(_) => "pane.cmux_resize",

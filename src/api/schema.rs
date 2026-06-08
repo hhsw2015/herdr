@@ -104,6 +104,10 @@ pub enum Method {
     PaneRead(PaneReadParams),
     #[serde(rename = "pane.screen_text")]
     PaneScreenText(PaneTarget),
+    #[serde(rename = "pane.wait_for_text")]
+    PaneWaitForText(PaneWaitForTextParams),
+    #[serde(rename = "pane.wait_for_idle")]
+    PaneWaitForIdle(PaneWaitForIdleParams),
     #[serde(rename = "pane.report_agent")]
     PaneReportAgent(PaneReportAgentParams),
     #[serde(rename = "pane.report_agent_session")]
@@ -531,6 +535,26 @@ pub struct PaneWaitForOutputParams {
     pub strip_ansi: bool,
 }
 
+/// Block until the visible viewport (libghostty-vt grid) contains a match.
+/// Self-contained: walks the same `Terminal::visible_screen_text` snapshot
+/// as `pane.screen_text`, polled every CONNECTION_POLL_INTERVAL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneWaitForTextParams {
+    pub pane_id: String,
+    pub r#match: OutputMatch,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// Block until the pane stops producing PTY bytes for `settle_ms`. Times out
+/// after `deadline_ms` if the stream never settles. Self-contained.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneWaitForIdleParams {
+    pub pane_id: String,
+    pub settle_ms: u64,
+    pub deadline_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegrationInstallParams {
     pub target: IntegrationTarget,
@@ -693,6 +717,15 @@ pub enum ResponseResult {
     PaneScreenText {
         pane_id: String,
         text: String,
+    },
+    PaneTextMatched {
+        pane_id: String,
+        matched_line: Option<String>,
+        text: String,
+    },
+    PaneIdle {
+        pane_id: String,
+        idle_ms: u64,
     },
     WorkspaceInfo {
         workspace: WorkspaceInfo,

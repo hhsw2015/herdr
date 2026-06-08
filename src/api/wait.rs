@@ -1,10 +1,12 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, Method, Request, ResponseResult, SuccessResponse,
+    ErrorBody, ErrorResponse, Method, OutputMatch, PaneTarget, PaneWaitForIdleParams,
+    PaneWaitForTextParams, Request, ResponseResult, SuccessResponse,
 };
 use crate::api::server::{
     dispatch_to_app_with_timeout, should_stop_connection, APP_RESPONSE_TIMEOUT,
@@ -113,6 +115,184 @@ pub(super) fn wait_for_output(
                     error: ErrorBody {
                         code: "timeout".into(),
                         message: "timed out waiting for output match".into(),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// Block until the visible viewport contains a substring/regex match.
+///
+/// Polls `pane.screen_text` (libghostty-vt grid snapshot) every
+/// `CONNECTION_POLL_INTERVAL`. Different from `wait_for_output` which polls
+/// the scrollback ANSI stream. Self-contained — no termctrl/cmux deps.
+pub(super) fn wait_for_text(
+    request_id: String,
+    params: PaneWaitForTextParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    crate::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
+    let deadline = params
+        .timeout_ms
+        .map(|ms| Instant::now() + Duration::from_millis(ms));
+
+    let regex = match &params.r#match {
+        OutputMatch::Regex { value } => match Regex::new(value) {
+            Ok(regex) => Some(regex),
+            Err(err) => {
+                return Ok(Some(
+                    serde_json::to_string(&ErrorResponse {
+                        id: request_id,
+                        error: ErrorBody {
+                            code: "invalid_regex".into(),
+                            message: err.to_string(),
+                        },
+                    })
+                    .unwrap(),
+                ));
+            }
+        },
+        OutputMatch::Substring { .. } => None,
+    };
+
+    loop {
+        if should_stop_connection(stream, running)? {
+            crate::logging::api_wait_completed(&request_id, &params.pane_id, "client_disconnected");
+            return Ok(None);
+        }
+
+        let screen_request = Request {
+            id: format!("{request_id}:screen"),
+            method: Method::PaneScreenText(PaneTarget {
+                pane_id: params.pane_id.clone(),
+            }),
+        };
+        let response =
+            dispatch_to_app_with_timeout(screen_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&response) else {
+            return Ok(Some(response));
+        };
+        if value.get("error").is_some() {
+            let mut value = value;
+            value["id"] = serde_json::Value::String(request_id.clone());
+            return Ok(Some(serde_json::to_string(&value).unwrap()));
+        }
+
+        let text = value["result"]["text"].as_str().unwrap_or("").to_string();
+        let matched_line = match_output(&text, &params.r#match, regex.as_ref());
+        if matched_line.is_some() {
+            crate::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
+            return Ok(Some(
+                serde_json::to_string(&SuccessResponse {
+                    id: request_id,
+                    result: ResponseResult::PaneTextMatched {
+                        pane_id: params.pane_id,
+                        matched_line,
+                        text,
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            crate::logging::api_wait_timed_out(&request_id, &params.pane_id);
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "timeout".into(),
+                        message: "timed out waiting for screen text match".into(),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// Block until the visible viewport stops changing for `settle_ms`.
+///
+/// Considered "idle" when two consecutive `pane.screen_text` snapshots taken
+/// at least `settle_ms` apart are byte-identical. Returns `timeout` if
+/// never settles before `deadline_ms`.
+pub(super) fn wait_for_idle(
+    request_id: String,
+    params: PaneWaitForIdleParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    crate::logging::api_wait_started(&request_id, &params.pane_id, Some(params.deadline_ms));
+    let deadline = Instant::now() + Duration::from_millis(params.deadline_ms);
+    let settle = Duration::from_millis(params.settle_ms);
+    let mut last_text: Option<String> = None;
+    let mut stable_since: Option<Instant> = None;
+
+    loop {
+        if should_stop_connection(stream, running)? {
+            crate::logging::api_wait_completed(&request_id, &params.pane_id, "client_disconnected");
+            return Ok(None);
+        }
+
+        let screen_request = Request {
+            id: format!("{request_id}:screen"),
+            method: Method::PaneScreenText(PaneTarget {
+                pane_id: params.pane_id.clone(),
+            }),
+        };
+        let response =
+            dispatch_to_app_with_timeout(screen_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&response) else {
+            return Ok(Some(response));
+        };
+        if value.get("error").is_some() {
+            let mut value = value;
+            value["id"] = serde_json::Value::String(request_id.clone());
+            return Ok(Some(serde_json::to_string(&value).unwrap()));
+        }
+        let text = value["result"]["text"].as_str().unwrap_or("").to_string();
+
+        let now = Instant::now();
+        match (&last_text, stable_since) {
+            (Some(prev), Some(since)) if prev == &text => {
+                if now.duration_since(since) >= settle {
+                    let idle_ms = now.duration_since(since).as_millis() as u64;
+                    crate::logging::api_wait_completed(&request_id, &params.pane_id, "idle");
+                    return Ok(Some(
+                        serde_json::to_string(&SuccessResponse {
+                            id: request_id,
+                            result: ResponseResult::PaneIdle {
+                                pane_id: params.pane_id,
+                                idle_ms,
+                            },
+                        })
+                        .unwrap(),
+                    ));
+                }
+            }
+            _ => {
+                stable_since = Some(now);
+                last_text = Some(text);
+            }
+        }
+
+        if now >= deadline {
+            crate::logging::api_wait_timed_out(&request_id, &params.pane_id);
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "timeout".into(),
+                        message: "timed out waiting for pane to go idle".into(),
                     },
                 })
                 .unwrap(),
