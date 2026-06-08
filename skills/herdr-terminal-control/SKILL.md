@@ -1,5 +1,5 @@
 ---
-name: terminal-control
+name: herdr-terminal-control
 description: >
   Drive and observe terminal applications (TUIs / REPLs / interactive CLIs)
   inside herdr panes using the herdr JSON-RPC API (`pane.screen_text`,
