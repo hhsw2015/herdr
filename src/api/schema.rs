@@ -122,6 +122,8 @@ pub enum Method {
     PaneWaitForKind(PaneWaitForKindParams),
     #[serde(rename = "pane.wait_for_cursor")]
     PaneWaitForCursor(PaneWaitForCursorParams),
+    #[serde(rename = "pane.wait_for_screen_change")]
+    PaneWaitForScreenChange(PaneWaitForScreenChangeParams),
     #[serde(rename = "pane.report_agent")]
     PaneReportAgent(PaneReportAgentParams),
     #[serde(rename = "pane.report_agent_session")]
@@ -602,6 +604,22 @@ pub struct PaneWaitForCursorParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// Byte-level keystroke acknowledgement: block until `screen_hash`
+/// differs from `prev_hash`. Provides a classifier-independent "did
+/// the keystroke land?" signal — works in any TUI (nvim+lualine, htop,
+/// fzf, custom apps) since it only checks whether the visible grid
+/// changed at all. `timeout_ms` defaults to 1500ms so a silently
+/// dropped key surfaces immediately.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneWaitForScreenChangeParams {
+    pub pane_id: String,
+    pub prev_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_ms: Option<u64>,
+}
+
 /// Region-limited variant of `pane.screen_text`. Pass `last_rows` to get
 /// only the bottom N rows (typical use: shell prompt, vim status line) or
 /// `first_rows` for the top N. Both null => full grid (same as `pane.screen_text`).
@@ -910,6 +928,11 @@ pub enum ResponseResult {
         cursor_col: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+    },
+    PaneScreenChanged {
+        pane_id: String,
+        hash: String,
+        changed: bool,
     },
     PaneExpect {
         pane_id: String,

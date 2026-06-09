@@ -17,7 +17,8 @@ use crate::api::schema::{
 };
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::wait::{
-    wait_for_cursor, wait_for_idle, wait_for_kind, wait_for_output, wait_for_text,
+    wait_for_cursor, wait_for_idle, wait_for_kind, wait_for_output, wait_for_screen_change,
+    wait_for_text,
 };
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
@@ -396,6 +397,48 @@ fn handle_connection(
                 crate::logging::api_request_completed(&request_id, method, response_outcome, false);
                 continue;
             }
+            Method::PaneWaitForScreenChange(params) => {
+                let wait_result = wait_for_screen_change(
+                    request_id.clone(),
+                    params,
+                    &mut stream,
+                    api_tx,
+                    running,
+                );
+                let Some(response) = (match wait_result {
+                    Ok(value) => value,
+                    Err(err) => {
+                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
+                        let envelope = ErrorResponse {
+                            id: request_id.clone(),
+                            error: ErrorBody {
+                                code: "wait_for_screen_change_failed".into(),
+                                message: err.to_string(),
+                            },
+                        };
+                        if let Err(write_err) =
+                            write_json_line_allow_disconnect(&mut stream, &envelope)
+                        {
+                            if is_connection_closed_error(&write_err) {
+                                return Ok(());
+                            }
+                            return Err(write_err);
+                        }
+                        continue;
+                    }
+                }) else {
+                    return Ok(());
+                };
+                let response_outcome = api_response_outcome(&response);
+                if let Err(write_err) = write_json_line(&mut stream, &response) {
+                    if is_connection_closed_error(&write_err) {
+                        return Ok(());
+                    }
+                    return Err(write_err);
+                }
+                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
+                continue;
+            }
             Method::PaneWaitForIdle(params) => {
                 let wait_result =
                     wait_for_idle(request_id.clone(), params, &mut stream, api_tx, running);
@@ -608,6 +651,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneExpect(_) => "pane.expect",
         Method::PaneWaitForKind(_) => "pane.wait_for_kind",
         Method::PaneWaitForCursor(_) => "pane.wait_for_cursor",
+        Method::PaneWaitForScreenChange(_) => "pane.wait_for_screen_change",
         Method::PaneReportAgent(_) => "pane.report_agent",
         Method::PaneReportAgentSession(_) => "pane.report_agent_session",
         Method::PaneReportMetadata(_) => "pane.report_metadata",

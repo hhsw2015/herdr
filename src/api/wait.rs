@@ -6,8 +6,8 @@ use regex::Regex;
 
 use crate::api::schema::{
     ErrorBody, ErrorResponse, Method, OutputMatch, PaneTarget, PaneWaitForCursorParams,
-    PaneWaitForIdleParams, PaneWaitForKindParams, PaneWaitForKindTarget, PaneWaitForTextParams,
-    Request, ResponseResult, SuccessResponse,
+    PaneWaitForIdleParams, PaneWaitForKindParams, PaneWaitForKindTarget,
+    PaneWaitForScreenChangeParams, PaneWaitForTextParams, Request, ResponseResult, SuccessResponse,
 };
 use crate::api::server::{
     dispatch_to_app_with_timeout, should_stop_connection, APP_RESPONSE_TIMEOUT,
@@ -463,5 +463,75 @@ pub(super) fn wait_for_cursor(
             ));
         }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// Block until `pane.screen_hash` returns a digest different from
+/// `prev_hash`. Provides a byte-level "did the keystroke land?" signal
+/// without depending on classifier heuristics or cursor reporting.
+/// Default timeout is 1500ms — fail-fast surfaces silently dropped
+/// keys instantly. Polls at 25ms by default for sub-frame latency.
+pub(super) fn wait_for_screen_change(
+    request_id: String,
+    params: PaneWaitForScreenChangeParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    let timeout_ms = params.timeout_ms.unwrap_or(1500);
+    let poll_ms = params.poll_ms.unwrap_or(25);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let poll_interval = Duration::from_millis(poll_ms);
+    let mut last_hash = params.prev_hash.clone();
+
+    loop {
+        if should_stop_connection(stream, running)? {
+            return Ok(None);
+        }
+        let hash_request = Request {
+            id: format!("{request_id}:hash"),
+            method: Method::PaneScreenHash(PaneTarget {
+                pane_id: params.pane_id.clone(),
+            }),
+        };
+        let resp = dispatch_to_app_with_timeout(hash_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&resp) else {
+            return Ok(Some(resp));
+        };
+        if value.get("error").is_some() {
+            let mut value = value;
+            value["id"] = serde_json::Value::String(request_id.clone());
+            return Ok(Some(serde_json::to_string(&value).unwrap()));
+        }
+        let hash = value["result"]["hash"].as_str().unwrap_or("").to_string();
+        if !hash.is_empty() && hash != params.prev_hash {
+            return Ok(Some(
+                serde_json::to_string(&SuccessResponse {
+                    id: request_id,
+                    result: ResponseResult::PaneScreenChanged {
+                        pane_id: params.pane_id,
+                        hash,
+                        changed: true,
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+        last_hash = hash;
+        if Instant::now() >= deadline {
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "timeout".into(),
+                        message: format!(
+                            "screen did not change within {timeout_ms}ms — keystroke silently dropped (last_hash={last_hash})"
+                        ),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+        std::thread::sleep(poll_interval);
     }
 }
