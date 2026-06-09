@@ -118,6 +118,10 @@ pub enum Method {
     PaneWaitForText(PaneWaitForTextParams),
     #[serde(rename = "pane.wait_for_idle")]
     PaneWaitForIdle(PaneWaitForIdleParams),
+    #[serde(rename = "pane.wait_for_kind")]
+    PaneWaitForKind(PaneWaitForKindParams),
+    #[serde(rename = "pane.wait_for_cursor")]
+    PaneWaitForCursor(PaneWaitForCursorParams),
     #[serde(rename = "pane.report_agent")]
     PaneReportAgent(PaneReportAgentParams),
     #[serde(rename = "pane.report_agent_session")]
@@ -565,6 +569,39 @@ pub struct PaneWaitForIdleParams {
     pub deadline_ms: u64,
 }
 
+/// Block until `tui_probe.kind` matches one of the supplied targets.
+/// Lets agents confirm a state-machine transition (e.g. shell_prompt ->
+/// vim_normal after `vi file`) before sending the next keystroke.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneWaitForKindParams {
+    pub pane_id: String,
+    pub kind: PaneWaitForKindTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PaneWaitForKindTarget {
+    Single(String),
+    Many(Vec<String>),
+}
+
+/// Block until cursor row/col/kind matches the supplied target.
+/// All three may be omitted (treated as wildcard) but at least one must be set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneWaitForCursorParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 /// Region-limited variant of `pane.screen_text`. Pass `last_rows` to get
 /// only the bottom N rows (typical use: shell prompt, vim status line) or
 /// `first_rows` for the top N. Both null => full grid (same as `pane.screen_text`).
@@ -854,6 +891,25 @@ pub enum ResponseResult {
         indicators: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_line: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        last_lines: Vec<String>,
+    },
+    PaneKindMatched {
+        pane_id: String,
+        matched: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_row: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_col: Option<u32>,
+    },
+    PaneCursorMatched {
+        pane_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_row: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_col: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     PaneExpect {
         pane_id: String,

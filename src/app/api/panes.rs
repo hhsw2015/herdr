@@ -695,6 +695,16 @@ impl App {
         } else {
             None
         };
+        let last_lines: Vec<String> = snap
+            .rows
+            .iter()
+            .rev()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         encode_success(
             id,
             ResponseResult::PaneTuiProbe {
@@ -706,6 +716,7 @@ impl App {
                 cursor_col: snap.cursor_col,
                 indicators: probe.indicators,
                 last_line,
+                last_lines,
             },
         )
     }

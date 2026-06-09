@@ -12,6 +12,39 @@ pub struct ProbeOutcome {
     pub indicators: Vec<String>,
 }
 
+/// Match vanilla vim ("All"/"Top"/"Bot" + "1,1" position) and
+/// neovim with lualine/airline ("Top    1:1", "Bot 25:80", "12%"
+/// patterns) statuslines. Cursor doesn't have to be on this line —
+/// in nvim+lualine the cursor sits in the buffer area while statusline
+/// renders below.
+pub fn looks_like_vim_status_line(line: &str) -> bool {
+    if line.len() < 4 {
+        return false;
+    }
+    let has_position_word = line.contains("All") || line.contains("Top") || line.contains("Bot");
+    let has_modified_flag = line.contains("[+]");
+    // Coordinate: vim "1,1" or lualine "1:1"; word-boundary so we don't
+    // catch "12,000 lines" or random colons in paths.
+    let has_coordinate = line
+        .split(|c: char| !c.is_ascii_digit() && c != ',' && c != ':')
+        .any(|tok| {
+            if let Some((a, b)) = tok.split_once(|c| c == ',' || c == ':') {
+                !a.is_empty()
+                    && !b.is_empty()
+                    && a.chars().all(|c| c.is_ascii_digit())
+                    && b.chars().all(|c| c.is_ascii_digit())
+            } else {
+                false
+            }
+        });
+    // Percent like "12%" / "100%"
+    let has_percent = line
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|tok| !tok.is_empty())
+        && line.contains('%');
+    has_position_word || has_modified_flag || has_coordinate || has_percent
+}
+
 pub fn classify(rows: &[String], cursor_row: Option<u32>, cursor_col: Option<u32>) -> ProbeOutcome {
     let _ = cursor_col;
     let non_empty: Vec<&String> = rows.iter().filter(|r| !r.is_empty()).collect();
@@ -103,19 +136,15 @@ pub fn classify(rows: &[String], cursor_row: Option<u32>, cursor_col: Option<u32
         };
     }
 
+    if looks_like_vim_status_line(last) && last.len() > 4 {
+        return ProbeOutcome {
+            kind: "vim_normal",
+            indicators: vec![last.to_string()],
+        };
+    }
     if rows.len() >= 2 {
         let second_last = &rows[rows.len() - 2];
-        let has_position = second_last.split_whitespace().any(|tok| {
-            tok.split_once(',').is_some_and(|(a, b)| {
-                a.chars().all(|c| c.is_ascii_digit()) && b.chars().all(|c| c.is_ascii_digit())
-            })
-        });
-        if (second_last.contains("All")
-            || second_last.contains("Top")
-            || second_last.contains("Bot")
-            || has_position)
-            && second_last.len() > 4
-        {
+        if looks_like_vim_status_line(second_last) && second_last.len() > 4 {
             return ProbeOutcome {
                 kind: "vim_normal",
                 indicators: vec![second_last.clone()],
@@ -190,5 +219,44 @@ mod tests {
     fn input_prompt_password() {
         let out = classify(&["Password: ".to_string()], Some(0), Some(10));
         assert_eq!(out.kind, "input_prompt");
+    }
+
+    #[test]
+    fn nvim_lualine_top_position() {
+        // Real-world neovim+lualine status line ("Top   1:1")
+        let out = classify(
+            &[
+                String::new(),
+                String::new(),
+                " hello.txt  hello.txt                                       Top    1:1"
+                    .to_string(),
+            ],
+            Some(0),
+            Some(0),
+        );
+        assert_eq!(out.kind, "vim_normal");
+    }
+
+    #[test]
+    fn lualine_bot_with_percent() {
+        let out = classify(
+            &[
+                "buffer".to_string(),
+                "~".to_string(),
+                " file.py                                              Bot 47%".to_string(),
+            ],
+            Some(0),
+            Some(0),
+        );
+        assert_eq!(out.kind, "vim_normal");
+    }
+
+    #[test]
+    fn helper_recognizes_coordinate() {
+        assert!(looks_like_vim_status_line(" file.txt  Top    1:1"));
+        assert!(looks_like_vim_status_line(" file.py  Bot 25:80"));
+        assert!(looks_like_vim_status_line(" 1,1     All"));
+        assert!(!looks_like_vim_status_line("$ "));
+        assert!(!looks_like_vim_status_line(""));
     }
 }

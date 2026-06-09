@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, Method, OutputMatch, PaneTarget, PaneWaitForIdleParams,
-    PaneWaitForTextParams, Request, ResponseResult, SuccessResponse,
+    ErrorBody, ErrorResponse, Method, OutputMatch, PaneTarget, PaneWaitForCursorParams,
+    PaneWaitForIdleParams, PaneWaitForKindParams, PaneWaitForKindTarget, PaneWaitForTextParams,
+    Request, ResponseResult, SuccessResponse,
 };
 use crate::api::server::{
     dispatch_to_app_with_timeout, should_stop_connection, APP_RESPONSE_TIMEOUT,
@@ -299,6 +300,170 @@ pub(super) fn wait_for_idle(
             ));
         }
 
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// Block until `pane.tui_probe` reports a `kind` matching one of the
+/// supplied targets. Polls every `CONNECTION_POLL_INTERVAL`. Used by
+/// agents driving TUIs key-by-key — confirm `vi file` actually entered
+/// vim_normal before sending `i`, etc.
+pub(super) fn wait_for_kind(
+    request_id: String,
+    params: PaneWaitForKindParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    let timeout_ms = params.timeout_ms.unwrap_or(5_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let targets: std::collections::HashSet<String> = match &params.kind {
+        PaneWaitForKindTarget::Single(s) => std::iter::once(s.clone()).collect(),
+        PaneWaitForKindTarget::Many(v) => v.iter().cloned().collect(),
+    };
+    if targets.is_empty() {
+        return Ok(Some(
+            serde_json::to_string(&ErrorResponse {
+                id: request_id,
+                error: ErrorBody {
+                    code: "invalid_params".into(),
+                    message: "kind must contain at least one value".into(),
+                },
+            })
+            .unwrap(),
+        ));
+    }
+
+    let mut last_kind = String::new();
+    loop {
+        if should_stop_connection(stream, running)? {
+            return Ok(None);
+        }
+        let probe_request = Request {
+            id: format!("{request_id}:probe"),
+            method: Method::PaneTuiProbe(PaneTarget {
+                pane_id: params.pane_id.clone(),
+            }),
+        };
+        let resp = dispatch_to_app_with_timeout(probe_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&resp) else {
+            return Ok(Some(resp));
+        };
+        if value.get("error").is_some() {
+            let mut value = value;
+            value["id"] = serde_json::Value::String(request_id.clone());
+            return Ok(Some(serde_json::to_string(&value).unwrap()));
+        }
+        let kind = value["result"]["kind"].as_str().unwrap_or("").to_string();
+        if targets.contains(&kind) {
+            let cursor_row = value["result"]["cursor_row"].as_u64().map(|v| v as u32);
+            let cursor_col = value["result"]["cursor_col"].as_u64().map(|v| v as u32);
+            return Ok(Some(
+                serde_json::to_string(&SuccessResponse {
+                    id: request_id,
+                    result: ResponseResult::PaneKindMatched {
+                        pane_id: params.pane_id,
+                        matched: kind,
+                        cursor_row,
+                        cursor_col,
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+        last_kind = kind;
+
+        if Instant::now() >= deadline {
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "timeout".into(),
+                        message: format!("timed out waiting for kind; last={last_kind}"),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// Block until cursor row/col/kind matches the target. Used to assert
+/// post-keystroke positions ("after `gg`, cursor.row should be 0").
+pub(super) fn wait_for_cursor(
+    request_id: String,
+    params: PaneWaitForCursorParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    if params.row.is_none() && params.col.is_none() && params.kind.is_none() {
+        return Ok(Some(
+            serde_json::to_string(&ErrorResponse {
+                id: request_id,
+                error: ErrorBody {
+                    code: "invalid_params".into(),
+                    message: "at least one of row/col/kind must be set".into(),
+                },
+            })
+            .unwrap(),
+        ));
+    }
+    let timeout_ms = params.timeout_ms.unwrap_or(5_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+
+    loop {
+        if should_stop_connection(stream, running)? {
+            return Ok(None);
+        }
+        let probe_request = Request {
+            id: format!("{request_id}:probe"),
+            method: Method::PaneTuiProbe(PaneTarget {
+                pane_id: params.pane_id.clone(),
+            }),
+        };
+        let resp = dispatch_to_app_with_timeout(probe_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&resp) else {
+            return Ok(Some(resp));
+        };
+        if value.get("error").is_some() {
+            let mut value = value;
+            value["id"] = serde_json::Value::String(request_id.clone());
+            return Ok(Some(serde_json::to_string(&value).unwrap()));
+        }
+        let cur_row = value["result"]["cursor_row"].as_u64().map(|v| v as u32);
+        let cur_col = value["result"]["cursor_col"].as_u64().map(|v| v as u32);
+        let cur_kind = value["result"]["kind"].as_str().map(|s| s.to_string());
+        let row_ok = params.row.is_none() || cur_row == params.row;
+        let col_ok = params.col.is_none() || cur_col == params.col;
+        let kind_ok = params.kind.is_none() || cur_kind == params.kind;
+        if row_ok && col_ok && kind_ok {
+            return Ok(Some(
+                serde_json::to_string(&SuccessResponse {
+                    id: request_id,
+                    result: ResponseResult::PaneCursorMatched {
+                        pane_id: params.pane_id,
+                        cursor_row: cur_row,
+                        cursor_col: cur_col,
+                        kind: cur_kind,
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "timeout".into(),
+                        message: "timed out waiting for cursor".into(),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
 }
