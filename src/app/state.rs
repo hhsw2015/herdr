@@ -1654,6 +1654,8 @@ impl AppState {
             request_reload_config: false,
             pending_events: Vec::new(),
             pending_layout_changes: Vec::new(),
+            screen_diff_cache: std::collections::HashMap::new(),
+            screen_diff_cache_order: Vec::new(),
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
