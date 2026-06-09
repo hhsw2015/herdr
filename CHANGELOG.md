@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.6.8-cmux2] - 2026-06-09
+
+### Added
+- Five token-efficient pane RPCs to drive TUIs without full-screen polling overhead:
+  - `pane.screen_hash` — SHA-256 + dimensions, ~100 B response. Cache and skip full text fetch when unchanged.
+  - `pane.screen_region` — `last_rows`/`first_rows` clip the returned text. Cuts payload ~80% for prompt/status reads.
+  - `pane.screen_diff` — incremental: pass previous `state_seq`, daemon returns `{changed: false}` (~30 B) or only changed rows. Full snapshot fallback on alt-screen toggle or >60% rows changed.
+  - `pane.tui_probe` — heuristic state classifier. Returns `kind` in `{shell_prompt, repl_prompt, vim_*, less_pager, input_prompt, running_command, unknown}`.
+  - `pane.expect` — batch executor. One RPC, N steps (`send`/`send_key`/`wait_text`/`wait_idle`/`sleep_ms`). Saves ~70% vs chained round trips.
+- `ghostty::Terminal::visible_screen_hash`, `visible_screen_region`, `visible_screen_snapshot` helpers.
+- Skill doc rewritten with token-budget guide and per-RPC byte-cost table.
+
+### Changed
+- `AppState` owns a 64-entry LRU `screen_diff_cache`, evicted FIFO.
+- `pane.expect` orchestration runs in the api connection thread so it reuses existing `wait_for_text`/`wait_for_idle` abort-on-disconnect semantics.
+
 ## [0.6.8-cmux1] - 2026-06-08
 
 ### Changed
