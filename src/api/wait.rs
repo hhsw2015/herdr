@@ -334,7 +334,6 @@ pub(super) fn wait_for_kind(
         ));
     }
 
-    let mut last_kind = String::new();
     loop {
         if should_stop_connection(stream, running)? {
             return Ok(None);
@@ -371,7 +370,6 @@ pub(super) fn wait_for_kind(
                 .unwrap(),
             ));
         }
-        last_kind = kind;
 
         if Instant::now() >= deadline {
             return Ok(Some(
@@ -379,7 +377,7 @@ pub(super) fn wait_for_kind(
                     id: request_id,
                     error: ErrorBody {
                         code: "timeout".into(),
-                        message: format!("timed out waiting for kind; last={last_kind}"),
+                        message: format!("timed out waiting for kind; last={kind}"),
                     },
                 })
                 .unwrap(),

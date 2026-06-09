@@ -28,7 +28,7 @@ pub fn looks_like_vim_status_line(line: &str) -> bool {
     let has_coordinate = line
         .split(|c: char| !c.is_ascii_digit() && c != ',' && c != ':')
         .any(|tok| {
-            if let Some((a, b)) = tok.split_once(|c| c == ',' || c == ':') {
+            if let Some((a, b)) = tok.split_once([',', ':']) {
                 !a.is_empty()
                     && !b.is_empty()
                     && a.chars().all(|c| c.is_ascii_digit())
