@@ -1140,7 +1140,9 @@ impl GhosttyPaneTerminal {
         first_rows: Option<u32>,
     ) -> Option<String> {
         let core = self.core.lock().ok()?;
-        core.terminal.visible_screen_region(last_rows, first_rows).ok()
+        core.terminal
+            .visible_screen_region(last_rows, first_rows)
+            .ok()
     }
 
     /// Row-vector + cursor + active-screen snapshot.

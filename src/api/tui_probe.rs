@@ -26,7 +26,10 @@ pub fn classify(rows: &[String], cursor_row: Option<u32>, cursor_col: Option<u32
         .map(|r| (r as usize) + 1 == rows.len() || (r as usize) == rows.len().saturating_sub(1))
         .unwrap_or(false);
 
-    if last.contains("-- INSERT --") || last.contains("-- VISUAL --") || last.contains("-- REPLACE --") {
+    if last.contains("-- INSERT --")
+        || last.contains("-- VISUAL --")
+        || last.contains("-- REPLACE --")
+    {
         let mode = if last.contains("INSERT") {
             "vim_insert"
         } else if last.contains("VISUAL") {
@@ -102,9 +105,11 @@ pub fn classify(rows: &[String], cursor_row: Option<u32>, cursor_col: Option<u32
 
     if rows.len() >= 2 {
         let second_last = &rows[rows.len() - 2];
-        let has_position = second_last
-            .split_whitespace()
-            .any(|tok| tok.split_once(',').is_some_and(|(a, b)| a.chars().all(|c| c.is_ascii_digit()) && b.chars().all(|c| c.is_ascii_digit())));
+        let has_position = second_last.split_whitespace().any(|tok| {
+            tok.split_once(',').is_some_and(|(a, b)| {
+                a.chars().all(|c| c.is_ascii_digit()) && b.chars().all(|c| c.is_ascii_digit())
+            })
+        });
         if (second_last.contains("All")
             || second_last.contains("Top")
             || second_last.contains("Bot")
@@ -166,7 +171,11 @@ mod tests {
     #[test]
     fn less_end_marker() {
         let out = classify(
-            &["line1".to_string(), "line2".to_string(), "(END)".to_string()],
+            &[
+                "line1".to_string(),
+                "line2".to_string(),
+                "(END)".to_string(),
+            ],
             Some(2),
             Some(5),
         );

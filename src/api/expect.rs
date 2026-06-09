@@ -13,10 +13,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, Method, PaneExpectErrorDetail, PaneExpectParams, PaneExpectStep,
-    PaneExpectStepResult, PaneScreenRegionParams, PaneSendKeysParams, PaneSendTextParams,
-    PaneTarget, PaneWaitForIdleParams, PaneWaitForTextParams, Request, ResponseResult,
-    SuccessResponse,
+    Method, PaneExpectErrorDetail, PaneExpectParams, PaneExpectStep, PaneExpectStepResult,
+    PaneSendKeysParams, PaneSendTextParams, PaneWaitForIdleParams, PaneWaitForTextParams, Request,
+    ResponseResult, SuccessResponse,
 };
 use crate::api::server::{dispatch_to_app_with_timeout, APP_RESPONSE_TIMEOUT};
 use crate::api::wait::{wait_for_idle, wait_for_text};
@@ -57,7 +56,10 @@ pub(super) fn handle_expect(
                 }),
                 api_tx,
             ),
-            PaneExpectStep::WaitText { r#match, timeout_ms } => {
+            PaneExpectStep::WaitText {
+                r#match,
+                timeout_ms,
+            } => {
                 match wait_for_text(
                     step_id.clone(),
                     PaneWaitForTextParams {
@@ -138,10 +140,12 @@ pub(super) fn handle_expect(
             error: error_detail,
         },
     };
-    Ok(Some(serde_json::to_string(&response).unwrap_or_else(|_| {
-        r#"{"id":"","error":{"code":"internal_error","message":"failed to encode response"}}"#
-            .to_string()
-    })))
+    Ok(Some(serde_json::to_string(&response).unwrap_or_else(
+        |_| {
+            r#"{"id":"","error":{"code":"internal_error","message":"failed to encode response"}}"#
+                .to_string()
+        },
+    )))
 }
 
 enum StepOutcome {
@@ -208,7 +212,3 @@ fn fetch_tail(
     };
     value["result"]["text"].as_str().unwrap_or("").to_string()
 }
-
-// Suppress unused-import warning when `Pane{Target}` only used through wait helpers.
-#[allow(dead_code)]
-fn _ensure_imports(_: &PaneTarget, _: &ErrorResponse, _: &ErrorBody) {}

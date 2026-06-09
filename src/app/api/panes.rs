@@ -683,7 +683,11 @@ impl App {
             return pane_not_found(id, &target.pane_id);
         };
         let Some(snap) = pane.visible_screen_snapshot() else {
-            return encode_error(id, "internal_error", "failed to snapshot screen".to_string());
+            return encode_error(
+                id,
+                "internal_error",
+                "failed to snapshot screen".to_string(),
+            );
         };
         let probe = crate::api::tui_probe::classify(&snap.rows, snap.cursor_row, snap.cursor_col);
         let last_line = if probe.kind == "unknown" {
@@ -719,7 +723,11 @@ impl App {
                 return pane_not_found(id, &params.pane_id);
             };
             let Some(s) = pane.visible_screen_snapshot() else {
-                return encode_error(id, "internal_error", "failed to snapshot screen".to_string());
+                return encode_error(
+                    id,
+                    "internal_error",
+                    "failed to snapshot screen".to_string(),
+                );
             };
             s
         };
@@ -735,13 +743,16 @@ impl App {
             .map(|c| c.active_screen != active_screen_label)
             .unwrap_or(false);
 
-        let canDiff = since_seq != 0
+        let can_diff = since_seq != 0
             && cache.is_some()
             && !alt_switched
-            && cache.as_ref().map(|c| c.rows.len() == cur_rows.len()).unwrap_or(false);
+            && cache
+                .as_ref()
+                .map(|c| c.rows.len() == cur_rows.len())
+                .unwrap_or(false);
 
         let mut changed_indices: Vec<u32> = Vec::new();
-        if canDiff {
+        if can_diff {
             if let Some(prev) = cache.as_ref() {
                 for (i, row) in cur_rows.iter().enumerate() {
                     if prev.rows.get(i) != Some(row) {
@@ -752,7 +763,7 @@ impl App {
         }
 
         // Generate a fresh seq whenever rows change OR client passed since=0.
-        let next_seq = match (&cache, canDiff) {
+        let next_seq = match (&cache, can_diff) {
             (Some(prev), true) if changed_indices.is_empty() => prev.state_seq,
             (Some(prev), _) => prev.state_seq.wrapping_add(1),
             (None, _) => 1,
@@ -768,7 +779,7 @@ impl App {
             },
         );
 
-        if canDiff && changed_indices.is_empty() {
+        if can_diff && changed_indices.is_empty() {
             return encode_success(
                 id,
                 ResponseResult::PaneScreenDiff {
@@ -785,7 +796,7 @@ impl App {
         }
 
         let dirty_ratio_limit = ((total as usize) * 60 / 100).max(1);
-        let use_full = !canDiff || changed_indices.len() > dirty_ratio_limit;
+        let use_full = !can_diff || changed_indices.len() > dirty_ratio_limit;
 
         if use_full {
             let mut joined = cur_rows.join("\n");
