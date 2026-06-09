@@ -1281,6 +1281,11 @@ pub struct AppState {
     /// (ws_idx, tab_idx) pairs whose LayoutTree should be sampled and
     /// broadcast on the next App tick.
     pub pending_layout_changes: Vec<(usize, usize)>,
+    /// Per-pane row cache for `pane.screen_diff`. Bounded LRU; evicted
+    /// when count exceeds [`crate::app::SCREEN_DIFF_CACHE_LIMIT`].
+    pub(crate) screen_diff_cache:
+        std::collections::HashMap<(usize, PaneId), crate::app::ScreenDiffCacheEntry>,
+    pub(crate) screen_diff_cache_order: Vec<(usize, PaneId)>,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
     pub request_client_config_reload: bool,

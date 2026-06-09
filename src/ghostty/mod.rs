@@ -1056,16 +1056,16 @@ impl Terminal {
         Ok(self.collect_screen_text(range, cols))
     }
 
-    /// Visible viewport as a row-vector + the cursor position + the
-    /// active screen (primary/alternate) + dimensions. The row vector
-    /// is the same trimmed text used by `visible_screen_text`. Backs
-    /// `pane.screen_diff` and `pane.tui_probe`, both of which need the
-    /// per-row breakdown rather than a single joined string.
+    /// Visible viewport as a row-vector + the active screen
+    /// (primary/alternate) + dimensions. The row vector is the same
+    /// trimmed text used by `visible_screen_text`. Backs
+    /// `pane.screen_diff` and `pane.tui_probe`. The cursor position is
+    /// not included here because that lives on `RenderState`, not on
+    /// `Terminal`; callers (panes layer) attach the cursor separately.
     pub fn visible_screen_snapshot(&self) -> Result<VisibleScreenSnapshot, Error> {
         let cols = self.cols()?;
         let rows = u32::from(self.rows()?);
         let active_screen = self.active_screen()?;
-        let cursor = self.cursor_viewport()?;
         let mut row_vec = Vec::with_capacity(rows as usize);
         for y in 0..rows {
             let mut row = String::new();
@@ -1089,8 +1089,8 @@ impl Terminal {
             row_count: rows,
             column_count: u32::from(cols),
             active_screen,
-            cursor_row: cursor.as_ref().map(|c| u32::from(c.y)),
-            cursor_col: cursor.as_ref().map(|c| u32::from(c.x)),
+            cursor_row: None,
+            cursor_col: None,
         })
     }
 

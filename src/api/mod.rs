@@ -5,7 +5,7 @@ pub mod schema;
 mod server;
 mod status;
 mod subscriptions;
-mod tui_probe;
+pub(crate) mod tui_probe;
 mod wait;
 
 pub use event_hub::EventHub;

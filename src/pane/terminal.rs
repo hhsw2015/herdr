@@ -1145,10 +1145,24 @@ impl GhosttyPaneTerminal {
             .ok()
     }
 
-    /// Row-vector + cursor + active-screen snapshot.
+    /// Row-vector + cursor + active-screen snapshot. Cursor is
+    /// pulled from `RenderState::cursor_viewport` (same path as
+    /// `cursor_state`) since it does not live on the `Terminal` directly.
     pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
-        let core = self.core.lock().ok()?;
-        core.terminal.visible_screen_snapshot().ok()
+        let mut core = self.core.lock().ok()?;
+        let GhosttyPaneCore {
+            terminal,
+            render_state,
+            ..
+        } = &mut *core;
+        let mut snapshot = terminal.visible_screen_snapshot().ok()?;
+        if render_state.update(terminal).is_ok() {
+            if let Ok(Some(cursor)) = render_state.cursor_viewport() {
+                snapshot.cursor_col = Some(u32::from(cursor.x));
+                snapshot.cursor_row = Some(u32::from(cursor.y));
+            }
+        }
+        Some(snapshot)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {

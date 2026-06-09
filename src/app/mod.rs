@@ -131,10 +131,6 @@ pub struct App {
     pub render_dirty: Arc<AtomicBool>,
     pub(crate) full_redraw_pending: bool,
     pub(crate) overlay_panes: HashMap<crate::layout::PaneId, OverlayPaneState>,
-    /// Per-pane row cache for `pane.screen_diff`. Bounded LRU; evicted
-    /// when count exceeds [`SCREEN_DIFF_CACHE_LIMIT`].
-    pub(crate) screen_diff_cache: HashMap<(usize, crate::layout::PaneId), ScreenDiffCacheEntry>,
-    pub(crate) screen_diff_cache_order: Vec<(usize, crate::layout::PaneId)>,
     pub(crate) local_terminal_notifications: bool,
     pub(crate) config_reloaded_from_disk: bool,
     prefix_input_source: Box<dyn crate::platform::PrefixInputSource>,
@@ -437,6 +433,8 @@ impl App {
             request_reload_config: false,
             pending_events: Vec::new(),
             pending_layout_changes: Vec::new(),
+            screen_diff_cache: std::collections::HashMap::new(),
+            screen_diff_cache_order: Vec::new(),
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -620,8 +618,6 @@ impl App {
             render_dirty,
             full_redraw_pending: false,
             overlay_panes: HashMap::new(),
-            screen_diff_cache: HashMap::new(),
-            screen_diff_cache_order: Vec::new(),
             local_terminal_notifications: true,
             config_reloaded_from_disk: false,
             prefix_input_source: Box::new(crate::platform::RealPrefixInputSource::default()),

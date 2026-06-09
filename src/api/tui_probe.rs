@@ -148,8 +148,6 @@ mod tests {
 
     #[test]
     fn shell_prompt_dollar() {
-        let rows = vec!["", "$ ".to_string()];
-        let _ = rows;
         let out = classify(&[String::new(), "$ ".to_string()], Some(1), Some(2));
         assert_eq!(out.kind, "shell_prompt");
     }
