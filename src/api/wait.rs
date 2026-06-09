@@ -482,8 +482,6 @@ pub(super) fn wait_for_screen_change(
     let poll_ms = params.poll_ms.unwrap_or(25);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let poll_interval = Duration::from_millis(poll_ms);
-    let mut last_hash = params.prev_hash.clone();
-
     loop {
         if should_stop_connection(stream, running)? {
             return Ok(None);
@@ -517,7 +515,6 @@ pub(super) fn wait_for_screen_change(
                 .unwrap(),
             ));
         }
-        last_hash = hash;
         if Instant::now() >= deadline {
             return Ok(Some(
                 serde_json::to_string(&ErrorResponse {
@@ -525,7 +522,7 @@ pub(super) fn wait_for_screen_change(
                     error: ErrorBody {
                         code: "timeout".into(),
                         message: format!(
-                            "screen did not change within {timeout_ms}ms — keystroke silently dropped (last_hash={last_hash})"
+                            "screen did not change within {timeout_ms}ms — keystroke silently dropped (last_hash={hash})"
                         ),
                     },
                 })
