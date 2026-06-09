@@ -23,6 +23,56 @@ of a pane and drive interaction deterministically. Self-contained — no
 panel instead. The herdr path is the right choice for headless servers,
 CI runners, and remote dev hosts where you have only a daemon, not a UI.
 
+## Token Budget (read first)
+
+Each `pane.screen_text` returns the full visible grid (~2 KB for an
+80×24 pane). Naive polling burns context fast. **Push waiting into the
+daemon, read full screen only when you must.**
+
+**Banned patterns** (do not write):
+
+- `pane.screen_text` in a polling loop comparing against an expected
+  substring. Use `pane.wait_for_text` — daemon polls internally,
+  returns one bool.
+- `pane.screen_text` followed by `sleep` followed by `pane.screen_text`.
+  Use `pane.wait_for_idle` — daemon settles for you.
+- `pane.screen_text` *just to check* if the screen changed.
+  Use `pane.screen_hash` — returns 32-byte digest + seq, ~50 byte
+  response.
+- Reading the full grid when you only care about the last line
+  (shell prompt, vim status bar, less footer).
+  Use `pane.screen_region` with `last_rows`.
+
+**Recommended pattern**:
+
+1. Send input → `wait_for_text` (or `wait_for_idle`) — never `sleep`.
+2. Cache previous `screen_hash`. On each tick, ask for the hash; if
+   unchanged, do nothing. Only fetch full text when hash differs.
+3. Read full `screen_text` only at decision points or for final
+   verification, not every iteration.
+4. For multi-step scripted flows, use `pane.expect` (one RPC, N steps
+   inside the daemon) instead of N round trips.
+
+**Rule of thumb**: an automated TUI session should average
+≤ 200 bytes of RPC response per agent step. If you are reading a full
+screen grid every step, the loop is wrong.
+
+## Generic TUI Categories
+
+Every interactive terminal program falls into one of these shapes; pick
+the right primitive accordingly:
+
+| Shape | Examples | Wait primitive | Read primitive |
+|---|---|---|---|
+| **Line-based REPL / shell** | bash, zsh, python, ipython, psql | `wait_for_text` on prompt regex (`\$ $` / `>>> `) | `screen_region {last_rows: 5}` |
+| **Full-screen modal** | vim, less, man, k9s | `wait_for_text` on status-line marker (`-- INSERT --`, `(END)`) | `screen_region {last_rows: 1}` for status, `screen_text` for body |
+| **Menu / picker** | fzf, lazygit, gh, htop | `wait_for_idle` after arrow keys | `screen_text` once, `screen_hash` between keystrokes |
+| **Input prompt / confirmation** | sudo, ssh password, `(y/n)` | `wait_for_text` on the literal prompt string | none — send and `wait_for_idle` |
+| **Long-running stream** | docker logs, kubectl logs, tail -f | `wait_for_text` on a known marker line | `screen_region {last_rows: 10}` |
+
+When unsure: probe with `pane.screen_region {last_rows: 3}` first.
+A single line tells you 80% of the time which category you are in.
+
 ## Prerequisites
 
 - A herdr daemon (started with `herdr` or `herdr server`).
@@ -68,17 +118,69 @@ rpc "{\"id\":\"f\",\"method\":\"pane.screen_text\",\"params\":{\"pane_id\":\"$PA
 
 ## Choose The Correct Observation
 
-| You want | Use |
-|---|---|
-| Current visible viewport text (alternate-screen TUI) | `pane.screen_text` |
-| Scrollback text / persistent log output | `pane.read` |
-| Wait until a string appears on visible screen | `pane.wait_for_text` |
-| Wait until a string appears in scrollback / output stream | `pane.wait_for_output` |
-| Wait until output settles (no new bytes for `settle_ms`) | `pane.wait_for_idle` |
+| You want | Use | Typical bytes |
+|---|---|---|
+| Current visible viewport text (alt-screen TUI) | `pane.screen_text` | ~2 KB |
+| Just the bottom N rows (prompt / status line) | `pane.screen_region {last_rows: N}` | ~80 B/row |
+| Just changed rows since last seq | `pane.screen_diff {since_seq}` | 30-200 B |
+| Did the screen change since last poll? | `pane.screen_hash` | ~100 B |
+| What kind of TUI is this? | `pane.tui_probe` | ~150 B |
+| Scrollback text / persistent log output | `pane.read` | varies |
+| Wait until a string appears on visible screen | `pane.wait_for_text` | ~50 B |
+| Wait until a string appears in scrollback | `pane.wait_for_output` | ~50 B |
+| Wait until output settles | `pane.wait_for_idle` | ~50 B |
+| Run a multi-step send/wait flow in one round trip | `pane.expect` | ~200 B (final only) |
 
 > Do **not** treat `pane.read` as the visible state of an alternate-screen
 > TUI like vim. `pane.screen_text` reads the libghostty-vt grid directly
 > — that is the one source of truth for "what the user sees right now".
+
+### Long-Running Loops: Use `screen_diff`, Not `screen_text`
+
+For agents that read streamed output (LLM completion, `tail -f`,
+`docker logs`), call `pane.screen_diff` with the previous `state_seq`
+each tick. First call (`since_seq` omitted/0) returns full text + a
+seq; subsequent calls with that seq return only changed rows or a
+`{changed:false}` no-op (~30 B). The daemon falls back to a full
+snapshot when >60% of rows changed or the alt-screen toggled.
+
+A 1000-iteration polling loop on an idle pane costs ~30 KB total with
+`screen_diff` vs ~2 MB with `screen_text`. Same precision (you see every
+character that hits the screen), 60× cheaper.
+
+### Routing Decisions: Use `tui_probe`, Not `screen_text` Parsing
+
+If your agent needs to know "am I at a shell prompt yet?" or "is vim in
+insert mode?", call `pane.tui_probe` and switch on the `kind` field.
+Possible values: `shell_prompt`, `repl_prompt`, `vim_normal`,
+`vim_insert`, `vim_visual`, `vim_replace`, `vim_command`, `less_pager`,
+`input_prompt`, `running_command`, `unknown`. Always have a fallback
+for `unknown` — the classifier is heuristic.
+
+### Multi-Step Flows: Use `pane.expect`, Not Loops
+
+```json
+{
+  "id": "exp1",
+  "method": "pane.expect",
+  "params": {
+    "pane_id": "...",
+    "steps": [
+      {"verb": "send", "text": "ls\n"},
+      {"verb": "wait_text", "match": {"type": "substring", "value": "$ "}, "timeout_ms": 3000},
+      {"verb": "send", "text": "cd /tmp\n"},
+      {"verb": "wait_text", "match": {"type": "substring", "value": "$ "}, "timeout_ms": 3000}
+    ],
+    "stop_on_error": true,
+    "tail_rows": 5
+  }
+}
+```
+
+Returns `{completed, total, steps[], tail, error?}`. Four steps in one
+RPC instead of four RPCs + four waits. Saves ~70% over the naive loop;
+the daemon never returns until the whole sequence finishes or one step
+fails with `stop_on_error: true`.
 
 ## Drive Input Precisely
 

@@ -2172,6 +2172,26 @@ impl PaneRuntime {
         self.terminal.visible_screen_text()
     }
 
+    /// SHA-256 + dimensions of the visible viewport. Backs `pane.screen_hash`.
+    /// Cheaper than fetching `screen_text` when polling for "did it change?".
+    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
+        self.terminal.visible_screen_hash()
+    }
+
+    /// Region-limited screen read for `pane.screen_region`.
+    pub fn visible_screen_region(
+        &self,
+        last_rows: Option<u32>,
+        first_rows: Option<u32>,
+    ) -> Option<String> {
+        self.terminal.visible_screen_region(last_rows, first_rows)
+    }
+
+    /// Row-vector snapshot for `pane.screen_diff` and `pane.tui_probe`.
+    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
+        self.terminal.visible_screen_snapshot()
+    }
+
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
         self.terminal.extract_selection(selection)
     }

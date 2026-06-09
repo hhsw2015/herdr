@@ -254,6 +254,27 @@ impl PaneTerminal {
         self.ghostty.visible_screen_text()
     }
 
+    /// SHA-256 + dimensions of the visible viewport. Cheap "did the
+    /// screen change?" probe for `pane.screen_hash`.
+    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
+        self.ghostty.visible_screen_hash()
+    }
+
+    /// Region-limited screen read for `pane.screen_region`.
+    pub fn visible_screen_region(
+        &self,
+        last_rows: Option<u32>,
+        first_rows: Option<u32>,
+    ) -> Option<String> {
+        self.ghostty.visible_screen_region(last_rows, first_rows)
+    }
+
+    /// Row-vector + cursor + active-screen snapshot. Backs
+    /// `pane.screen_diff` and `pane.tui_probe`.
+    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
+        self.ghostty.visible_screen_snapshot()
+    }
+
     pub fn collect_dirty_patch(
         &self,
         area_width: u16,
@@ -1104,6 +1125,28 @@ impl GhosttyPaneTerminal {
     pub fn visible_screen_text(&self) -> Option<String> {
         let core = self.core.lock().ok()?;
         core.terminal.visible_screen_text().ok()
+    }
+
+    /// SHA-256 + dimensions of the visible viewport. Backs `pane.screen_hash`.
+    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
+        let core = self.core.lock().ok()?;
+        core.terminal.visible_screen_hash().ok()
+    }
+
+    /// Region-limited screen read for `pane.screen_region`.
+    pub fn visible_screen_region(
+        &self,
+        last_rows: Option<u32>,
+        first_rows: Option<u32>,
+    ) -> Option<String> {
+        let core = self.core.lock().ok()?;
+        core.terminal.visible_screen_region(last_rows, first_rows).ok()
+    }
+
+    /// Row-vector + cursor + active-screen snapshot.
+    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
+        let core = self.core.lock().ok()?;
+        core.terminal.visible_screen_snapshot().ok()
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {

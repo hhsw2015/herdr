@@ -66,6 +66,17 @@ pub(crate) struct OverlayPaneState {
     temp_files: Vec<std::path::PathBuf>,
 }
 
+/// Cached row snapshot used by `pane.screen_diff` to compute incremental
+/// updates without the agent shipping the prior text back. Bounded LRU.
+#[derive(Debug, Clone)]
+pub(crate) struct ScreenDiffCacheEntry {
+    pub rows: Vec<String>,
+    pub state_seq: u64,
+    pub active_screen: String,
+}
+
+pub(crate) const SCREEN_DIFF_CACHE_LIMIT: usize = 64;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PaneClickState {
     pane_id: crate::layout::PaneId,
@@ -120,6 +131,10 @@ pub struct App {
     pub render_dirty: Arc<AtomicBool>,
     pub(crate) full_redraw_pending: bool,
     pub(crate) overlay_panes: HashMap<crate::layout::PaneId, OverlayPaneState>,
+    /// Per-pane row cache for `pane.screen_diff`. Bounded LRU; evicted
+    /// when count exceeds [`SCREEN_DIFF_CACHE_LIMIT`].
+    pub(crate) screen_diff_cache: HashMap<(usize, crate::layout::PaneId), ScreenDiffCacheEntry>,
+    pub(crate) screen_diff_cache_order: Vec<(usize, crate::layout::PaneId)>,
     pub(crate) local_terminal_notifications: bool,
     pub(crate) config_reloaded_from_disk: bool,
     prefix_input_source: Box<dyn crate::platform::PrefixInputSource>,
@@ -605,6 +620,8 @@ impl App {
             render_dirty,
             full_redraw_pending: false,
             overlay_panes: HashMap::new(),
+            screen_diff_cache: HashMap::new(),
+            screen_diff_cache_order: Vec::new(),
             local_terminal_notifications: true,
             config_reloaded_from_disk: false,
             prefix_input_source: Box::new(crate::platform::RealPrefixInputSource::default()),

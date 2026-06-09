@@ -104,6 +104,16 @@ pub enum Method {
     PaneRead(PaneReadParams),
     #[serde(rename = "pane.screen_text")]
     PaneScreenText(PaneTarget),
+    #[serde(rename = "pane.screen_hash")]
+    PaneScreenHash(PaneTarget),
+    #[serde(rename = "pane.screen_region")]
+    PaneScreenRegion(PaneScreenRegionParams),
+    #[serde(rename = "pane.screen_diff")]
+    PaneScreenDiff(PaneScreenDiffParams),
+    #[serde(rename = "pane.tui_probe")]
+    PaneTuiProbe(PaneTarget),
+    #[serde(rename = "pane.expect")]
+    PaneExpect(PaneExpectParams),
     #[serde(rename = "pane.wait_for_text")]
     PaneWaitForText(PaneWaitForTextParams),
     #[serde(rename = "pane.wait_for_idle")]
@@ -555,6 +565,91 @@ pub struct PaneWaitForIdleParams {
     pub deadline_ms: u64,
 }
 
+/// Region-limited variant of `pane.screen_text`. Pass `last_rows` to get
+/// only the bottom N rows (typical use: shell prompt, vim status line) or
+/// `first_rows` for the top N. Both null => full grid (same as `pane.screen_text`).
+/// Cuts payload by ~80% in the common single-line-prompt case.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneScreenRegionParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_rows: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_rows: Option<u32>,
+}
+
+/// Incremental screen read. First call (`since_seq` omitted/0) returns
+/// full text + new state_seq. Subsequent calls with the previous seq
+/// return only changed rows. Daemon falls back to a full snapshot when
+/// >60% of rows changed or the alt-screen toggled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneScreenDiffParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_seq: Option<u64>,
+}
+
+/// Batch-execute a sequence of send/wait steps inside the daemon.
+/// Replaces N round trips with one — typical for "send command, wait
+/// for prompt, send next, wait again" flows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneExpectParams {
+    pub pane_id: String,
+    pub steps: Vec<PaneExpectStep>,
+    #[serde(default = "default_true")]
+    pub stop_on_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_rows: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneScreenDiffRow {
+    pub y: u32,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneExpectStepResult {
+    pub index: u32,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneExpectErrorDetail {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "verb", rename_all = "snake_case")]
+pub enum PaneExpectStep {
+    Send {
+        text: String,
+    },
+    SendKey {
+        key: String,
+    },
+    WaitText {
+        #[serde(rename = "match")]
+        r#match: OutputMatch,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    WaitIdle {
+        settle_ms: u64,
+        deadline_ms: u64,
+    },
+    Sleep {
+        sleep_ms: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegrationInstallParams {
     pub target: IntegrationTarget,
@@ -717,6 +812,57 @@ pub enum ResponseResult {
     PaneScreenText {
         pane_id: String,
         text: String,
+    },
+    PaneScreenHash {
+        pane_id: String,
+        hash: String,
+        rows: u16,
+        columns: u16,
+    },
+    PaneScreenRegion {
+        pane_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_rows: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_rows: Option<u32>,
+    },
+    PaneScreenDiff {
+        pane_id: String,
+        state_seq: u64,
+        changed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        full: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        alt_screen_switched: Option<bool>,
+        rows: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dirty: Vec<PaneScreenDiffRow>,
+    },
+    PaneTuiProbe {
+        pane_id: String,
+        kind: String,
+        rows: u32,
+        columns: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_row: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_col: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        indicators: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_line: Option<String>,
+    },
+    PaneExpect {
+        pane_id: String,
+        completed: u32,
+        total: u32,
+        steps: Vec<PaneExpectStepResult>,
+        tail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<PaneExpectErrorDetail>,
     },
     PaneTextMatched {
         pane_id: String,

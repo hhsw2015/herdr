@@ -1,9 +1,11 @@
 pub mod client;
 mod event_hub;
+mod expect;
 pub mod schema;
 mod server;
 mod status;
 mod subscriptions;
+mod tui_probe;
 mod wait;
 
 pub use event_hub::EventHub;

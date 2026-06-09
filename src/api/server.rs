@@ -15,6 +15,7 @@ use crate::api::schema::{
     ErrorBody, ErrorResponse, Method, Request, ResponseResult, ServerCapabilities, SuccessResponse,
 };
 use crate::api::subscriptions::ActiveSubscription;
+use crate::api::expect::handle_expect;
 use crate::api::wait::{wait_for_idle, wait_for_output, wait_for_text};
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
@@ -244,6 +245,43 @@ fn handle_connection(
                     }
                 }
                 return result;
+            }
+            Method::PaneExpect(params) => {
+                let expect_result =
+                    handle_expect(request_id.clone(), params, &mut stream, api_tx, running);
+                let Some(response) = (match expect_result {
+                    Ok(value) => value,
+                    Err(err) => {
+                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
+                        let envelope = ErrorResponse {
+                            id: request_id.clone(),
+                            error: ErrorBody {
+                                code: "expect_failed".into(),
+                                message: err.to_string(),
+                            },
+                        };
+                        if let Err(write_err) =
+                            write_json_line_allow_disconnect(&mut stream, &envelope)
+                        {
+                            if is_connection_closed_error(&write_err) {
+                                return Ok(());
+                            }
+                            return Err(write_err);
+                        }
+                        continue;
+                    }
+                }) else {
+                    return Ok(());
+                };
+                let response_outcome = api_response_outcome(&response);
+                if let Err(write_err) = write_json_line(&mut stream, &response) {
+                    if is_connection_closed_error(&write_err) {
+                        return Ok(());
+                    }
+                    return Err(write_err);
+                }
+                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
+                continue;
             }
             Method::PaneWaitForText(params) => {
                 let wait_result =
@@ -487,6 +525,11 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneSendInput(_) => "pane.send_input",
         Method::PaneRead(_) => "pane.read",
         Method::PaneScreenText(_) => "pane.screen_text",
+        Method::PaneScreenHash(_) => "pane.screen_hash",
+        Method::PaneScreenRegion(_) => "pane.screen_region",
+        Method::PaneScreenDiff(_) => "pane.screen_diff",
+        Method::PaneTuiProbe(_) => "pane.tui_probe",
+        Method::PaneExpect(_) => "pane.expect",
         Method::PaneReportAgent(_) => "pane.report_agent",
         Method::PaneReportAgentSession(_) => "pane.report_agent_session",
         Method::PaneReportMetadata(_) => "pane.report_metadata",

@@ -294,6 +294,22 @@ impl TerminalRuntime {
         self.0.visible_screen_text()
     }
 
+    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
+        self.0.visible_screen_hash()
+    }
+
+    pub fn visible_screen_region(
+        &self,
+        last_rows: Option<u32>,
+        first_rows: Option<u32>,
+    ) -> Option<String> {
+        self.0.visible_screen_region(last_rows, first_rows)
+    }
+
+    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
+        self.0.visible_screen_snapshot()
+    }
+
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
         self.0.extract_selection(selection)
     }
