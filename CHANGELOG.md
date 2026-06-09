@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## [0.6.8-cmux3] - 2026-06-09
+
+### Added
+- `pane.wait_for_kind` — block until `tui_probe.kind` matches one of the supplied targets. Daemon polls internally, ~80 B response. Lets agents confirm a state-machine transition (shell_prompt → vim_normal) before sending the next keystroke.
+- `pane.wait_for_cursor` — block until cursor row/col/kind matches. Used to assert post-keystroke positions (e.g. after `gg`, cursor.row should be 0).
+- `pane.wait_for_screen_change` — byte-level keystroke ack. Block until `screen_hash` differs from `prev_hash`. Classifier-independent — works in any TUI (nvim+lualine, htop, fzf, custom apps) since it only checks whether the visible grid changed at all. Default 1500ms timeout surfaces silently dropped keys immediately (fail-fast).
+- `pane.tui_probe` payload now always includes `last_lines` (last 3 trimmed rows). Agents fall back to reading the real text when the heuristic classifier misses a custom prompt theme.
+- `pane.send_keys` `parse_api_key` covers full keyboard. Previously only enter/tab/esc/backspace/up/down/left/right/ctrl+c plus single ASCII chars; now adds named keys (return/space/delete/insert/home/end/page_up/page_down), function keys f1..f20, modifier prefixes (ctrl+/shift+/alt+/super+/meta+/cmd+ chainable), symbol aliases (minus/equal/comma/period/slash/semicolon/quote/grave/backslash/left_bracket/right_bracket), and any UTF-8 char as fallback.
+
+### Changed
+- `tui_probe` classifier recognizes neovim with lualine/airline statuslines (`Top  1:1`, `Bot 25:80`, percent, `[+]` modified marker).
+- `parse_api_key` returns clear `invalid_key` on unrecognized input instead of dropping the keystroke silently.
+
 ## [0.6.8-cmux2] - 2026-06-09
 
 ### Added
