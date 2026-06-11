@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.6.9-cmux1] - 2026-06-11
+
+### Changed
+- Merge upstream v0.6.9 into the cmux fork: manifest-based agent detection engine, agent detection manifests distribution and `agent.update_manifest`, kimi integration version gating, prompt-new-tab-name fix in mouse click handlers, codex background-pane-not-working classification fix, and the upstream 0.6.9 release.
+
 ## [0.6.8-cmux3] - 2026-06-09
 
 ### Added
