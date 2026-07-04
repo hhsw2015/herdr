@@ -528,8 +528,7 @@ pub enum EventData {
     PaneZoomed {
         pane_id: String,
         workspace_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab_id: Option<String>,
+        tab_id: String,
         zoomed: bool,
     },
     WorkspaceReordered {

@@ -52,6 +52,7 @@ impl App {
             cwd,
             focus,
             label,
+            ..
         } = params;
         let ws_idx = if let Some(workspace_id) = workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
