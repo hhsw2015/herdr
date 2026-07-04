@@ -1484,7 +1484,7 @@ impl AppState {
                 // their bindings before we drop terminal state.
                 self.pending_events.push(crate::api::schema::EventEnvelope {
                     event: crate::api::schema::EventKind::WorkspaceClosed,
-                    data: crate::api::schema::EventData::WorkspaceClosed { workspace_id },
+                    data: crate::api::schema::EventData::WorkspaceClosed { workspace_id, workspace: None },
                 });
             }
         }

@@ -1192,7 +1192,7 @@ impl App {
             });
             self.emit_event(EventEnvelope {
                 event: EventKind::WorkspaceClosed,
-                data: EventData::WorkspaceClosed { workspace_id },
+                data: EventData::WorkspaceClosed { workspace_id, workspace: None },
             });
         } else {
             self.state.remove_unattached_terminal_ids(terminal_id);

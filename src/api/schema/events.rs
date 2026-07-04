@@ -399,7 +399,7 @@ pub struct PaneAgentStatusChangedEvent {
     pub state_labels: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
     WorkspaceCreated {
@@ -528,6 +528,8 @@ pub enum EventData {
     PaneZoomed {
         pane_id: String,
         workspace_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab_id: Option<String>,
         zoomed: bool,
     },
     WorkspaceReordered {
