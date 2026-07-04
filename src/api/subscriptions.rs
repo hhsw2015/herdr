@@ -269,6 +269,13 @@ impl ActiveSubscription {
                     }))
                 }
             }
+            _ => Err(ErrorResponse {
+                id: request_id.to_string(),
+                error: ErrorBody {
+                    code: "unsupported_subscription".into(),
+                    message: "subscription kind not supported".into(),
+                },
+            }),
         }
     }
 
