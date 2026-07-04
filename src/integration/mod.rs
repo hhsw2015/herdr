@@ -385,8 +385,6 @@ fn agent_version_requirement(
             min_version: KIMI_MIN_VERSION,
         }),
         _ => None,
-            crate::api::schema::IntegrationTarget::Devin => Default::default(),
-        _ => Default::default(),
     }
 }
 
@@ -1025,8 +1023,6 @@ fn integration_target_install_layout_available(
         crate::api::schema::IntegrationTarget::Codex => codex_standalone_binary_available(),
         crate::api::schema::IntegrationTarget::Hermes => hermes_install_layout_available(),
         _ => false,
-            crate::api::schema::IntegrationTarget::Devin => Default::default(),
-        _ => Default::default(),
     }
 }
 
