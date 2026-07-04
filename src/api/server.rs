@@ -676,6 +676,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneFocus(_) => "pane.focus",
         Method::PaneSetZoom(_) => "pane.set_zoom",
         Method::TabReorder(_) => "tab.reorder",
+        _ => "unknown",
     }
 }
 
