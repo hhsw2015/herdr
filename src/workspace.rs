@@ -756,7 +756,6 @@ impl Workspace {
         }
     }
 
-    #[cfg(test)]
     fn close_active_tab_and_report(&mut self) -> bool {
         if self.tabs.len() <= 1 {
             return true;
