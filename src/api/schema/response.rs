@@ -7,9 +7,10 @@ use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
 };
 use super::panes::{
-    LayoutDescription, PaneEdgesResult, PaneFocusDirectionResult, PaneInfo, PaneLayoutSnapshot,
-    PaneMoveResult, PaneNeighborResult, PaneProcessInfo, PaneReadResult, PaneResizeResult,
-    PaneSwapResult, PaneZoomResult,
+    LayoutDescription, LayoutTree, PaneEdgesResult, PaneExpectErrorDetail, PaneExpectStepResult,
+    PaneFocusDirectionResult, PaneInfo, PaneLayoutSnapshot, PaneMoveResult, PaneNeighborResult,
+    PaneProcessInfo, PaneReadResult, PaneResizeResult, PaneScreenDiffRow, PaneSwapResult,
+    PaneZoomResult,
 };
 use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
@@ -232,6 +233,97 @@ pub enum ResponseResult {
         diagnostics: Vec<String>,
     },
     Ok {},
+    LayoutSnapshot {
+        tree: LayoutTree,
+    },
+    PaneScreenText {
+        pane_id: String,
+        text: String,
+    },
+    PaneScreenHash {
+        pane_id: String,
+        hash: String,
+        rows: u16,
+        columns: u16,
+    },
+    PaneScreenRegion {
+        pane_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_rows: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_rows: Option<u32>,
+    },
+    PaneScreenDiff {
+        pane_id: String,
+        state_seq: u64,
+        changed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        full: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        alt_screen_switched: Option<bool>,
+        rows: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dirty: Vec<PaneScreenDiffRow>,
+    },
+    PaneTuiProbe {
+        pane_id: String,
+        kind: String,
+        rows: u32,
+        columns: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_row: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_col: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        indicators: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_line: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        last_lines: Vec<String>,
+    },
+    PaneKindMatched {
+        pane_id: String,
+        matched: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_row: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_col: Option<u32>,
+    },
+    PaneCursorMatched {
+        pane_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_row: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_col: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+    PaneScreenChanged {
+        pane_id: String,
+        hash: String,
+        changed: bool,
+    },
+    PaneExpect {
+        pane_id: String,
+        completed: u32,
+        total: u32,
+        steps: Vec<PaneExpectStepResult>,
+        tail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<PaneExpectErrorDetail>,
+    },
+    PaneTextMatched {
+        pane_id: String,
+        matched_line: Option<String>,
+        text: String,
+    },
+    PaneIdle {
+        pane_id: String,
+        idle_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

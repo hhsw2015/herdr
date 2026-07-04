@@ -72,6 +72,14 @@ pub enum Subscription {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_status: Option<AgentStatus>,
     },
+    #[serde(rename = "layout.changed")]
+    LayoutChanged {},
+    #[serde(rename = "tab.reordered")]
+    TabReordered {},
+    #[serde(rename = "pane.zoomed")]
+    PaneZoomed {},
+    #[serde(rename = "workspace.reordered")]
+    WorkspaceReordered {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -204,6 +212,10 @@ pub enum EventKind {
     PaneExited,
     PaneAgentDetected,
     PaneAgentStatusChanged,
+    LayoutChanged,
+    TabReordered,
+    PaneZoomed,
+    WorkspaceReordered,
 }
 
 impl EventKind {
@@ -231,6 +243,10 @@ impl EventKind {
             EventKind::PaneExited => "pane.exited",
             EventKind::PaneAgentDetected => "pane.agent_detected",
             EventKind::PaneAgentStatusChanged => "pane.agent_status_changed",
+            EventKind::LayoutChanged => "layout.changed",
+            EventKind::TabReordered => "tab.reordered",
+            EventKind::PaneZoomed => "pane.zoomed",
+            EventKind::WorkspaceReordered => "workspace.reordered",
         }
     }
 }
@@ -501,5 +517,20 @@ pub enum EventData {
         custom_status: Option<String>,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         state_labels: HashMap<String, String>,
+    },
+    LayoutChanged {
+        tree: super::panes::LayoutTree,
+    },
+    TabReordered {
+        workspace_id: String,
+        tab_ids: Vec<String>,
+    },
+    PaneZoomed {
+        pane_id: String,
+        workspace_id: String,
+        zoomed: bool,
+    },
+    WorkspaceReordered {
+        workspace_ids: Vec<String>,
     },
 }
