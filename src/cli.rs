@@ -4,19 +4,41 @@ use serde::Serialize;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    AgentStatus, Method, OutputMatch, PaneAgentState, PaneWaitForOutputParams, ReadFormat,
-    ReadSource, Request, SplitDirection, Subscription,
+    AgentStatus, ClientWindowTitleSetParams, EmptyParams, Method, OutputMatch, PaneAgentState,
+    PaneWaitForOutputParams, ReadFormat, ReadSource, Request, SplitDirection, Subscription,
 };
 
 mod agent;
+mod api;
+mod completion;
 mod integration;
 mod notification;
 mod pane;
+mod plugin;
 mod server;
+mod spec;
 mod status;
 mod tab;
 mod workspace;
 mod worktree;
+
+const TERMINAL_SESSION_OBSERVE_USAGE: &str =
+    "usage: herdr terminal session observe <target> [--cols N] [--rows N]";
+const TERMINAL_SESSION_CONTROL_USAGE: &str =
+    "usage: herdr terminal session control <target> [--takeover] [--cols N] [--rows N]";
+
+pub(crate) fn parse_env_assignment(raw: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = raw.split_once('=') else {
+        return Err("env must use KEY=VALUE".into());
+    };
+    if key.is_empty() {
+        return Err("env key must not be empty".into());
+    }
+    if key.contains('\0') || value.contains('\0') {
+        return Err("env must not contain NUL bytes".into());
+    }
+    Ok((key.to_string(), value.to_string()))
+}
 
 pub enum CommandOutcome {
     Handled(i32),
@@ -35,7 +57,9 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
             };
             exit_code
         }
+        "api" => api::run_api_command(&args[2..])?,
         "status" => status::run_status_command(&args[2..])?,
+        "completion" | "completions" => completion::run_completion_command(&args[2..])?,
         "config" => run_config_command(&args[2..])?,
         "channel" => run_channel_command(&args[2..])?,
         "workspace" => workspace::run_workspace_command(&args[2..])?,
@@ -45,6 +69,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "agent" => agent::run_agent_command(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
+        "plugin" => plugin::run_plugin_command(&args[2..])?,
         "wait" => run_wait_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
@@ -307,6 +332,8 @@ fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
 
     match subcommand {
         "attach" => terminal_attach(&args[1..]),
+        "session" => terminal_session(&args[1..]),
+        "title" => terminal_title(&args[1..]),
         "help" | "--help" | "-h" => {
             print_terminal_help();
             Ok(0)
@@ -460,155 +487,180 @@ fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-#[cfg(not(unix))]
-fn api_bridge(_args: &[String]) -> std::io::Result<i32> {
-    eprintln!("api-bridge is not supported on this platform");
-    Ok(2)
+fn terminal_session(args: &[String]) -> std::io::Result<i32> {
+    match args.first().map(|arg| arg.as_str()) {
+        Some("control") => terminal_session_control(&args[1..]),
+        Some("observe") => terminal_session_observe(&args[1..]),
+        Some("help" | "--help" | "-h") => {
+            eprintln!("{TERMINAL_SESSION_CONTROL_USAGE}");
+            eprintln!("{TERMINAL_SESSION_OBSERVE_USAGE}");
+            Ok(0)
+        }
+        _ => {
+            eprintln!("{TERMINAL_SESSION_CONTROL_USAGE}");
+            eprintln!("{TERMINAL_SESSION_OBSERVE_USAGE}");
+            Ok(2)
+        }
+    }
 }
 
-#[cfg(unix)]
-fn api_bridge(args: &[String]) -> std::io::Result<i32> {
-    // Bridge stdin <-> the active herdr API socket. Designed to be
-    // exec'd over `ssh host herdr-cmux api-bridge` so a remote client
-    // can talk JSON-RPC to a herdr daemon without a direct UDS path.
-    //
-    // Optional --session NAME selects an alternate session (default:
-    // active session, matching `herdr` CLI behavior).
-    use std::io::{self, Read, Write};
-    use std::os::unix::net::UnixStream;
-    use std::thread;
-
-    // `--session NAME` is consumed by `session::configure_from_args`
-    // in main() before we run, and surfaces via the HERDR_SESSION env
-    // var. `active_api_socket_path()` honors both that env var and
-    // HERDR_SOCKET_PATH (for explicit-path overrides). Reject any
-    // remaining flag args so typos don't silently fall through to a
-    // default socket.
-    let usage = "usage: herdr api-bridge\n\
-                 (use --session NAME globally or HERDR_SOCKET_PATH for non-default sockets)";
-    if let Some(arg) = args.first() {
-        match arg.as_str() {
-            "--help" | "-h" => {
-                eprintln!("{usage}");
-                return Ok(0);
-            }
-            other => {
-                eprintln!("api-bridge: unexpected arg {other}");
-                eprintln!("{usage}");
-                return Ok(2);
-            }
-        }
-    }
-
-    let socket_path = crate::session::active_api_socket_path();
-    let stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("api-bridge: connect {} failed: {e}", socket_path.display());
-            return Ok(1);
-        }
+fn terminal_session_control(args: &[String]) -> std::io::Result<i32> {
+    let options = match parse_terminal_session_options(
+        args,
+        TERMINAL_SESSION_CONTROL_USAGE,
+        "control",
+        true,
+    )? {
+        Ok(options) => options,
+        Err(code) => return Ok(code),
     };
-    let mut stream_read = stream
-        .try_clone()
-        .map_err(|e| io::Error::other(format!("clone: {e}")))?;
-    let mut stream_write = stream;
 
-    // Pipe stdin -> UDS in a background thread so the main thread can
-    // drain UDS -> stdout. Either side closing tears down the bridge.
-    let stdin_handle = thread::spawn(move || -> io::Result<()> {
-        let mut stdin = io::stdin().lock();
-        let mut buf = [0u8; 8192];
-        loop {
-            let n = stdin.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            stream_write.write_all(&buf[..n])?;
-            stream_write.flush()?;
-        }
-        // Close write half so the daemon sees EOF on its read side.
-        let _ = stream_write.shutdown(std::net::Shutdown::Write);
-        Ok(())
-    });
-
-    // UDS -> stdout in main thread.
-    let mut stdout = io::stdout().lock();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = match stream_read.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("api-bridge: uds read: {e}");
-                break;
-            }
-        };
-        if stdout.write_all(&buf[..n]).is_err() {
-            break;
-        }
-        if stdout.flush().is_err() {
-            break;
-        }
-    }
-    let _ = stdin_handle.join();
+    crate::client::run_terminal_session_control(
+        options.target,
+        options.takeover,
+        options.cols,
+        options.rows,
+    )?;
     Ok(0)
 }
 
-fn raw_pty_attach(args: &[String]) -> std::io::Result<i32> {
-    let usage = "usage: herdr raw-pty-attach <terminal_id> [--takeover] [--cols N] [--rows N]";
-    let Some(terminal_id) = args.first() else {
-        eprintln!("{usage}");
-        return Ok(2);
+fn terminal_session_observe(args: &[String]) -> std::io::Result<i32> {
+    let options = match parse_terminal_session_options(
+        args,
+        TERMINAL_SESSION_OBSERVE_USAGE,
+        "observe",
+        false,
+    )? {
+        Ok(options) => options,
+        Err(code) => return Ok(code),
     };
+
+    crate::client::run_terminal_session_observe(options.target, options.cols, options.rows)?;
+    Ok(0)
+}
+
+struct TerminalSessionOptions {
+    target: String,
+    cols: u16,
+    rows: u16,
+    takeover: bool,
+}
+
+fn parse_terminal_session_options(
+    args: &[String],
+    usage: &str,
+    command: &str,
+    allow_takeover: bool,
+) -> std::io::Result<Result<TerminalSessionOptions, i32>> {
+    if matches!(
+        args.first().map(|arg| arg.as_str()),
+        Some("help" | "--help" | "-h")
+    ) {
+        eprintln!("{usage}");
+        return Ok(Err(0));
+    }
+    let Some(target) = args.first() else {
+        eprintln!("{usage}");
+        return Ok(Err(2));
+    };
+
+    let mut cols = 120;
+    let mut rows = 40;
     let mut takeover = false;
-    let mut cols: u16 = 80;
-    let mut rows: u16 = 24;
-    let mut idx = 1;
-    while idx < args.len() {
-        match args[idx].as_str() {
-            "--takeover" => takeover = true,
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--takeover" if allow_takeover => {
+                takeover = true;
+                i += 1;
+            }
             "--cols" => {
-                idx += 1;
-                if let Some(v) = args.get(idx).and_then(|s| s.parse::<u16>().ok()) {
-                    cols = v;
-                } else {
-                    eprintln!("--cols requires a numeric argument");
-                    return Ok(2);
-                }
+                let Some(value) = args.get(i + 1) else {
+                    eprintln!("{usage}");
+                    return Ok(Err(2));
+                };
+                cols = parse_terminal_dimension(value, "--cols")?;
+                i += 2;
             }
             "--rows" => {
-                idx += 1;
-                if let Some(v) = args.get(idx).and_then(|s| s.parse::<u16>().ok()) {
-                    rows = v;
-                } else {
-                    eprintln!("--rows requires a numeric argument");
-                    return Ok(2);
-                }
+                let Some(value) = args.get(i + 1) else {
+                    eprintln!("{usage}");
+                    return Ok(Err(2));
+                };
+                rows = parse_terminal_dimension(value, "--rows")?;
+                i += 2;
             }
             "help" | "--help" | "-h" => {
                 eprintln!("{usage}");
-                return Ok(0);
+                return Ok(Err(0));
             }
             other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
+                eprintln!("unknown terminal session {command} option: {other}");
+                eprintln!("{usage}");
+                return Ok(Err(2));
             }
         }
-        idx += 1;
     }
-    #[cfg(unix)]
-    {
-        crate::client::run_raw_pty_attach(terminal_id.clone(), takeover, cols, rows)?;
+
+    Ok(Ok(TerminalSessionOptions {
+        target: target.clone(),
+        cols,
+        rows,
+        takeover,
+    }))
+}
+
+fn parse_terminal_dimension(raw: &str, flag: &str) -> std::io::Result<u16> {
+    let parsed = raw.parse::<u16>().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{flag} must be an integer between 1 and {}", u16::MAX),
+        )
+    })?;
+    if parsed == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{flag} must be greater than 0"),
+        ));
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (terminal_id, takeover, cols, rows);
-        eprintln!("raw-pty-attach is not supported on this platform");
-        #[allow(clippy::needless_return)]
-        return Ok(2);
+    Ok(parsed)
+}
+
+fn terminal_title(args: &[String]) -> std::io::Result<i32> {
+    match args.first().map(|arg| arg.as_str()) {
+        Some("set") => {
+            if args.len() != 2 {
+                eprintln!("usage: herdr terminal title set <title>");
+                return Ok(2);
+            }
+            print_response(&send_request(&Request {
+                id: "cli:terminal:title:set".into(),
+                method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
+                    title: args[1].clone(),
+                }),
+            })?)
+        }
+        Some("clear") => {
+            if args.len() != 1 {
+                eprintln!("usage: herdr terminal title clear");
+                return Ok(2);
+            }
+            print_response(&send_request(&Request {
+                id: "cli:terminal:title:clear".into(),
+                method: Method::ClientWindowTitleClear(EmptyParams::default()),
+            })?)
+        }
+        Some("help" | "--help" | "-h") => {
+            eprintln!("usage: herdr terminal title set <title>");
+            eprintln!("       herdr terminal title clear");
+            Ok(0)
+        }
+        _ => {
+            eprintln!("usage: herdr terminal title set <title>");
+            eprintln!("       herdr terminal title clear");
+            Ok(2)
+        }
     }
-    #[allow(unreachable_code)]
-    Ok(0)
 }
 
 pub(super) fn parse_attach_target(args: &[String], usage: &str) -> Result<(String, bool), i32> {
@@ -1014,6 +1066,10 @@ fn print_config_help() {
 fn print_terminal_help() {
     eprintln!("herdr terminal commands:");
     eprintln!("  herdr terminal attach <terminal_id> [--takeover]");
+    eprintln!("  herdr terminal session control <target> [--takeover] [--cols N] [--rows N]");
+    eprintln!("  herdr terminal session observe <target> [--cols N] [--rows N]");
+    eprintln!("  herdr terminal title set <title>");
+    eprintln!("  herdr terminal title clear");
     eprintln!("  detach from direct attach with ctrl+b q; send literal ctrl+b with ctrl+b ctrl+b");
 }
 
@@ -1099,6 +1155,22 @@ mod tests {
         assert_eq!(
             super::channel_set_install_action(None),
             super::ChannelSetInstallAction::RunSelfUpdate
+        );
+    }
+
+    #[test]
+    fn parse_env_assignment_accepts_empty_values() {
+        assert_eq!(
+            super::parse_env_assignment("HERDR_ROLE=").unwrap(),
+            ("HERDR_ROLE".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn parse_env_assignment_requires_key_value_separator() {
+        assert_eq!(
+            super::parse_env_assignment("HERDR_ROLE").unwrap_err(),
+            "env must use KEY=VALUE"
         );
     }
 }

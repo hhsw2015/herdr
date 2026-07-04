@@ -2,209 +2,75 @@
 
 ## Unreleased
 
-## [0.6.9-cmux1] - 2026-06-11
-
-### Changed
-- Merge upstream v0.6.9 into the cmux fork: manifest-based agent detection engine, agent detection manifests distribution and `agent.update_manifest`, kimi integration version gating, prompt-new-tab-name fix in mouse click handlers, codex background-pane-not-working classification fix, and the upstream 0.6.9 release.
-
-## [0.6.8-cmux3] - 2026-06-09
+## [0.7.1] - 2026-06-24
 
 ### Added
-- `pane.wait_for_kind` — block until `tui_probe.kind` matches one of the supplied targets. Daemon polls internally, ~80 B response. Lets agents confirm a state-machine transition (shell_prompt → vim_normal) before sending the next keystroke.
-- `pane.wait_for_cursor` — block until cursor row/col/kind matches. Used to assert post-keystroke positions (e.g. after `gg`, cursor.row should be 0).
-- `pane.wait_for_screen_change` — byte-level keystroke ack. Block until `screen_hash` differs from `prev_hash`. Classifier-independent — works in any TUI (nvim+lualine, htop, fzf, custom apps) since it only checks whether the visible grid changed at all. Default 1500ms timeout surfaces silently dropped keys immediately (fail-fast).
-- `pane.tui_probe` payload now always includes `last_lines` (last 3 trimmed rows). Agents fall back to reading the real text when the heuristic classifier misses a custom prompt theme.
-- `pane.send_keys` `parse_api_key` covers full keyboard. Previously only enter/tab/esc/backspace/up/down/left/right/ctrl+c plus single ASCII chars; now adds named keys (return/space/delete/insert/home/end/page_up/page_down), function keys f1..f20, modifier prefixes (ctrl+/shift+/alt+/super+/meta+/cmd+ chainable), symbol aliases (minus/equal/comma/period/slash/semicolon/quote/grave/backslash/left_bracket/right_bracket), and any UTF-8 char as fallback.
+- Added `[update].version_check` and `[update].manifest_check` so background Herdr version checks and remote agent-detection manifest checks can be disabled independently. Manual `herdr update` and bundled/local detection manifests still work when the background checks are disabled. (#677)
+- Added `HERDR_AGENT=<agent>` as a Linux foreground-process hint for agents hidden behind wrappers such as VMs, Bubblewrap, or `fence`, allowing Herdr to use the named agent's screen manifest when `/proc` cannot expose the real command. (#679)
+- Added `ui.pane_borders` and `ui.pane_gaps` to make split pane dividers and spacing configurable. (#271)
 
 ### Changed
-- `tui_probe` classifier recognizes neovim with lualine/airline statuslines (`Top  1:1`, `Bot 25:80`, percent, `[+]` modified marker).
-- `parse_api_key` returns clear `invalid_key` on unrecognized input instead of dropping the keystroke silently.
+- Removed the Agents panel workspace/all filter. The panel now always shows all agents, defaults to grouped-by-space ordering, and can switch to priority ordering with `ui.agent_panel_sort = "priority"`. (#318)
+- User keybindings now displace conflicting built-in defaults during config load, so overriding a default binding no longer leaves both actions attached to the same key. (#747)
+- Worktree creation now checks out an existing local branch when the requested branch already exists instead of failing by trying to create it again. (#729)
+- Worktree operations started through the socket API and plugin/UI flows now defer long-running Git work until the app runtime can drive it, keeping clients responsive and preserving plugin lifecycle events for worktree-created panes. (#657, #662, #686)
+- OMP, OpenCode, Pi, Devin, and other official hook integrations now scope lifecycle and session reports to the intended root agent process more reliably, reducing stale or cross-process session adoption after restarts, nested commands, and new sessions. (#614, #712, #719, #765)
 
-## [0.6.8-cmux2] - 2026-06-09
+### Fixed
+- Windows Terminal multiline text paste now reaches pane apps as one bracketed paste, so OMP, Pi, and similar prompts no longer submit each pasted line separately. Plain Esc, Shift+Enter, mouse, focus, resize, and Unicode paste handling are preserved on the Windows client path. (#670)
+- Local Herdr clients no longer treat raw `Ctrl+V` as a clipboard-image paste trigger, so pane apps such as Vim and Neovim receive block-visual `Ctrl+V` even when the desktop clipboard contains an image. `herdr --remote` keeps `keys.remote_image_paste = "ctrl+v"` by default. (#647)
+- Herdr now refreshes cached host terminal colors when terminals report a light/dark color-scheme change, so pane apps that query OSC 10/11 no longer need detach/attach to see updated default colors. Opt-in `[theme].auto_switch` can also switch Herdr's own UI between configured `dark_name` and `light_name` themes. (#675)
+- Full-lifecycle hook agents can now recover when an old release/report sequence belongs to a previous agent generation. Herdr keeps process-exit validation active under lifecycle authority and re-anchors hook sequence guards after fresh session references or proven process exits. (#684)
+- OMP now reports a native session reference, so an OMP pane reappears in the Agents panel after exiting and rerunning `omp` in the same pane, and Herdr can resume it with `omp --resume=<session>`. Previously the released lifecycle hook stayed suppressed until a server restart. (#614)
+- Host terminal color query (OSC 10/11) replies that arrive split at their escape introducer no longer leak as text like `11;rgb:...` into the focused pane, most visible when launching agents that probe terminal colors on startup. (#549)
+- Long CJK Git branch names in the sidebar now truncate by display width instead of overflowing or cutting at the wrong cell boundary. (#644)
+- Temporary pane commands launched from API flows no longer steal focus from the previously focused pane after they finish. (#658)
+- Root agent session restore now ignores child process reports that would otherwise overwrite the saved session for the owning pane. (#712)
+- Kitty file-transfer media queries are now answered, allowing pane apps that rely on kitty graphics file support to detect image/file media capability correctly. (#732)
+- Idle or slow clients no longer block server writes to other clients while the blocked client is waiting for output. (#726)
+- GitHub Copilot CLI `ask_user` accept prompts are now detected as blocked so the Agents panel shows that the pane is waiting for input. (#725)
+- Pane reads now skip wide-character spacer cells, avoiding duplicated or malformed output around double-width characters. (#698)
+- Split pane border intersections now use the active pane color consistently. (#742, thanks @cullendotdev)
+- The Windows installer checksum fallback no longer depends on `Get-FileHash`, improving compatibility with constrained PowerShell environments. (#751)
+- Pi launched through npm wrappers on Windows is now detected as Pi instead of a generic wrapped process. (#754)
+- Windows builds now force the system ConPTY path through a vendored `portable-pty` patch, avoiding the bundled-path startup failure seen in affected Windows environments. (#761)
+- Key release events that fall back to encoded input no longer double-send text into pane apps. (#769)
+- Remote clients now allow a longer initial handshake, improving `herdr --remote` startup over high-latency links. (#753)
+
+## [0.7.0] - 2026-06-15
 
 ### Added
-- Five token-efficient pane RPCs to drive TUIs without full-screen polling overhead:
-  - `pane.screen_hash` — SHA-256 + dimensions, ~100 B response. Cache and skip full text fetch when unchanged.
-  - `pane.screen_region` — `last_rows`/`first_rows` clip the returned text. Cuts payload ~80% for prompt/status reads.
-  - `pane.screen_diff` — incremental: pass previous `state_seq`, daemon returns `{changed: false}` (~30 B) or only changed rows. Full snapshot fallback on alt-screen toggle or >60% rows changed.
-  - `pane.tui_probe` — heuristic state classifier. Returns `kind` in `{shell_prompt, repl_prompt, vim_*, less_pager, input_prompt, running_command, unknown}`.
-  - `pane.expect` — batch executor. One RPC, N steps (`send`/`send_key`/`wait_text`/`wait_idle`/`sleep_ms`). Saves ~70% vs chained round trips.
-- `ghostty::Terminal::visible_screen_hash`, `visible_screen_region`, `visible_screen_snapshot` helpers.
-- Skill doc rewritten with token-budget guide and per-RPC byte-cost table.
+- Added local plugin v1 support with `plugin.link/list/unlink/enable/disable`, manifest-declared actions, event hooks, managed plugin panes, link handlers, command logs, keybinding integration, and authoring docs under Preview docs.
+- Added `herdr plugin install <owner>/<repo>[/subdir...]`, `plugin uninstall`, source metadata in `plugin.list`, offline registry fallback, and a human-readable default `plugin list` with `--json` for scripts.
+- Added `herdr plugin config-dir <id>` and automatic plugin config/state directory creation so plugin setup docs can point users at a stable config path.
+- Added Devin CLI automatic detection plus `herdr integration install devin` hooks that report session ids for restore with `devin --resume <id>`. Devin state remains screen-detected because Devin hooks do not cover every permission cancellation and user interrupt transition. (#606, #622, thanks @minatoaquaMK2)
+- Added supporting plugin host APIs for `pane.current`, `pane.process_info`, `client.window_title.set/clear`, `layout.export/apply`, plugin pane placement, plugin invocation context/env injection, and plugin pane ownership across `pane.move`.
+- Added `pane.move` and `herdr pane move` to relocate a running pane into another tab, a new tab, or a new workspace without restarting its terminal process. (#299)
+- Tabs containing a zoomed pane are now marked in the tab bar so the zoom state is visible from other tabs.
 
 ### Changed
-- `AppState` owns a 64-entry LRU `screen_diff_cache`, evicted FIFO.
-- `pane.expect` orchestration runs in the api connection thread so it reuses existing `wait_for_text`/`wait_for_idle` abort-on-disconnect semantics.
-
-## [0.6.8-cmux1] - 2026-06-08
-
-### Changed
-- Merged upstream herdr master (50 commits) up to v0.6.8: Windows beta support, cursor-agent CLI integration, application keypad input, Codex truncated/interrupt status detection, macOS cmd-click pane links, gating integrations by platform, agent hooks/input paths on Windows, empty PTY mouse write filter, preserved Unix socket error semantics, scrollback hooks, OMP/Antigravity tweaks.
-
-## [0.6.6-cmux1] - 2026-06-02
-
-### Changed
-- Merged upstream herdr master (47 commits) up to v0.6.6: custom command keybinding descriptions, login-shell-by-default on macOS panes (with `terminal.shell_mode` opt-out), OpenCode session-event idle handling fix, Claude Code stale permission-prompt fix, Codex stale `esc to interrupt` fix, sidebar git status workspace deduplication, distinct update vs restart messaging, large-session restored-pane handoff bounding, parent worktree close confirmation, kilo code CLI detection, github copilot CLI integration, ssh keepalive bridge fallback, `xtgettcap`/OSC 4 palette query answers, retained-render toast preservation, and pty actor refactor.
-- Resolved post-merge conflicts:
-  - `Cargo.toml` / `Cargo.lock`: bumped fork to `0.6.6-cmux1`.
-  - `src/app/runtime.rs`: kept fork's `drain_pending_state_events` alongside upstream's `workspace_git_refresh_items`.
-  - `src/pane.rs`: folded fork's `raw_pty_tx` broadcast tap and `RawPtyHistory` ring into upstream's new `PtyIoActor` `on_read` callback so RawPty subscribers and replay still see bytes before the emulator processes them.
-  - `src/server/clients.rs`: combined fork's RawPty filter with upstream's `is_full_app_client()` / `TerminalAttach` mode check on the render-pipeline subscriber filter.
-  - `src/server/headless.rs`: added `direct_attach_requested: false` to fork's `ClientConnected` test events and untangled four interleaved test blocks (`raw_pty_attach_forwards_raw_bytes_to_client`, `raw_pty_input_reaches_pane_runtime`, `raw_pty_client_exits_when_attached_pane_dies` and the new `app_client_marks_git_refresh_due_on_first_attach` / `pending_terminal_attach_client_does_not_enable_headless_git_refresh` / `writerless_app_client_does_not_enable_headless_git_refresh` / `semantic_app_client_marks_git_refresh_due_on_first_attach` cases).
-
-## [0.6.5-cmux1] - 2026-05-30
-
-### Changed
-- Merge upstream master through v0.6.5: pane copy mode, login shells on macOS panes, foreground cwd in pane info, OSC52 clipboard preference in WSL, restored agent panes, opencode working state preservation, live workspace labels in notifications.
-- Resolved conflicts: take upstream's `pane_shell_command_builder` (upstream's "use login shells for macos panes" already covers fork's manual `-l` arg); fork version 0.6.5-cmux1.
-
-## [0.6.4-cmux1] - 2026-05-28
-
-### Changed
-- Merged upstream herdr master (19 commits) up to v0.6.4: agent session ref API, session socket timeout clamp, workspace rename live cwd seeding, terminal reply routing fix, live handoff terminal state preservation, macOS server fd limit raise, mp3 sound alert player fallback, OpenCode integration dispose fix, host color reply buffering, codex background terminal wait detection, agent status subscription delivery, pane Ctrl-click URL opening, double-click word copy with copy feedback, pane.report_metadata, navigate-mode movement bindings, configurable last_pane keybinding, scrollback in direct attach (protocol v11), opt-in pane history, configurable mobile width threshold, native agent session restore.
-- Resolved post-merge conflicts: kept fork's `public_workspace_id` / `public_pane_id` / `public_tab_id` helpers alongside upstream's `remove_alias_shadowed_by_new_pane`; kept fork's `layout_node_to_wire` alongside upstream's `terminal_agent_session_info`.
+- Bumped the client/server protocol version to 14 for `pane.move` compatibility. (#299)
+- Public workspace, tab, and pane ids are now short stable handles such as `w1`, `w1:t1`, and `w1:p1`; closed tab and pane ids no longer retarget later resources. (#569)
 
 ### Fixed
-- Updated `layout.rs` test for new `focus_pane` signature (was bool, now unit).
-- Tagged fork-only `MAX_INITIAL_REQUEST_BYTES` and `read_initial_request_line` as `dead_code` so clippy `-D warnings` no longer fails on macOS-only paths.
-- Refreshed nix `cargoHash` after `Cargo.lock` updated.
+- `pane.send_keys` and `pane.send_input.keys` now accept Herdr key-combo strings such as `ctrl+h`, `ctrl+j`, `ctrl+k`, and `ctrl+l`. (#613, thanks @dmmulroy)
+- Config startup and reload now warn about unknown top-level table sections, including a `[toast]` hint that points to `[ui.toast]`, instead of silently ignoring them.
+- Claude Code session restore now accepts real `/clear`, `/resume`, and compacted session identity changes while still ignoring nested `claude -p` startup sessions that inherit the pane environment. (#620)
+- Auto-named tab labels now stay compact after closing, moving, or creating tabs while public tab ids remain stable.
+- F1-F4 key presses sent as `ESC[11~` through `ESC[14~` now reach pane apps instead of being dropped. (#574)
+- Numeric keypad keys sent through the kitty keyboard protocol now enter their digits and operators instead of being dropped. (#570)
+- Pane resize keybindings now shrink panes again instead of only being able to grow them. (#562)
+- Windows pane cursor rendering is now stable instead of showing a misplaced or flickering cursor. (#556)
+- Tab identity is now preserved across restored sessions.
+- Idle panes now poll their PTY less frequently, reducing CPU use while sessions are inactive.
+- Captured pane URL clicks, including plugin link handlers, now use Ctrl-click on macOS too because captured terminal mouse reports do not expose Cmd-click separately from plain click. (#307)
 
-## [0.6.2-cmux12] - 2026-05-26
+## [0.6.10] - 2026-06-11
 
-### Changed
-- Merged upstream herdr master (17 commits): pane metadata reporting, global last-pane navigation, ctrl-click pane links, idle agent CPU reduction, double-click word copy, codex background terminal wait detection, agent-status delivered through event hub.
-- Resolved post-merge conflicts: kept fork's optional `pane_id` for `Subscription::PaneAgentStatusChanged` (None = global broadcast) while adopting upstream's boxed `ActiveAgentStatusChangedSubscription` with `last_presentation` / `initial_event` fields. Merged TUI focus paths through new `focus_pane_in_workspace` helper while preserving the cmux `PaneFocused` event emission. Dropped fork-only `focus_next` / `focus_prev` helpers (replaced by `pane_ids` cycling via the helper).
-- Cleaned up leftover conflict markers in `event_hub.rs` (preserved fork comment for `current_sequence`).
-
-## [0.6.2-cmux11] - 2026-05-26
-
-### Changed
-- Merged upstream herdr 0.6.2: optional Nix flake support, `terminal.new_cwd`, OMP integration helper, Git worktree CLI/socket API, Copilot/Kiro/Antigravity/Cursor agent detection, `ui.mouse_scroll_lines`, remote keybindings flag, sidebar worktree groups, named-session reattach hints. See upstream 0.6.1 / 0.6.2 entries below.
-- Resolved post-merge compile breakage: re-imported `BufReader` for the persistent connection loop, kept the fork-only `request_client_sound_config_reload` call sites aligned with the upstream `request_client_config_reload` field, and re-added `raw_pty_tx` / `raw_pty_history` to the no-PTY runtime constructor.
-
-## [0.6.0-cmux11] - 2026-05-22
+This is a hotfix release for v0.6.9. See the v0.6.9 notes for the full feature release.
 
 ### Fixed
-- `Method::PaneWaitForOutput` errors no longer tear down the persistent connection. The handler now writes a JSON error envelope (`code: "wait_for_output_failed"`) back to the client and continues the loop so subsequent RPCs on the same socket still land. The previous behaviour (return Err → close socket) defeated the entire persistent-connection rationale by forcing cmux to ssh-reconnect on a single transient pane error. Caught by review MED-6 of cmux 7bf29063.
-
-## [0.6.0-cmux10] - 2026-05-22
-
-### Fixed
-- `Method::PaneWaitForOutput` now logs `api_request_failed` when the underlying `wait_for_output` errors out, instead of leaving a dangling `api_request_started` with no terminal log. Caught by review HIGH-7 of the cmux persistent api-bridge work (cmux SHA 3c071dac).
-
-### Tests
-- `interleaved_requests_on_one_socket_preserve_send_order` documents the daemon's strict head-of-line ordering on a persistent connection: pipelined requests get responses in send order. A future async-rework of `handle_connection` that loses this property has to either preserve it or update the test.
-
-## [0.6.0-cmux9] - 2026-05-22
-
-### Changed
-- API socket connections now stay open for multiple sequential non-streaming requests instead of closing after the first response. Streaming methods (`events.subscribe`, `pane.wait_for_output`) still own the connection. Backward-compat: legacy single-shot clients close the socket after one request, the daemon's read loop hits `read == 0` and exits gracefully. Persistent clients (e.g. cmux's long-lived api-bridge subprocess) reuse one ssh channel for many RPCs, eliminating the ~700ms ssh+bincode handshake per call that was saturating the SSH master during cmux divider drags. Locked by `multiple_requests_share_one_socket_connection` integration test.
-
-## [0.6.0-cmux8] - 2026-05-22
-
-### Fixed
-- `pane.split`, `tab.create`, and other handlers that reuse `App::estimate_pane_size()` now clamp a zero-sized first pane back to the 24x80 fallback. Headless API clients (cmux, scripts) drive these RPCs before any TUI client has rendered, so `view.pane_infos.first()` could expose a 0x0 placeholder; sending that to libghostty-vt produced `ghostty error -2`. A panel-side `pane.resize` is still emitted as soon as the surface mounts.
-
-## [0.6.0-cmux7] - 2026-05-22
-
-### Fixed
-- `workspace.create` and `pane.split` now resolve the spawn cwd through a `requested → $HOME → current_dir → /` fallback chain. Previously a caller-supplied path that didn't exist on the daemon's filesystem (e.g. cmux on macOS sending `/Users/<me>` to a Linux daemon) reached libghostty-vt and crashed the spawn with `ghostty error -2`. The fallback also covers the case where the `cwd` field is omitted and the daemon's own `current_dir` is `/` (`setsid -f script` startup) — instead of dying, we land in `$HOME` like an interactive shell would.
-
-## [0.6.0-cmux6] - 2026-05-22
-
-### Added
-- Merged upstream `ogulcancelik/herdr` master (10 commits): client/server boundary refactor splitting `app/api.rs` into per-domain handler files (`agents`/`tabs`/`workspaces`/`panes`/`integrations`/`responses`), git worktree workspace management, configurable `ui.mouse_scroll_lines`, `--remote-keybindings local|server`, named-session reattach hints, agent allow-list for CJK IME cursor reveal, Cursor/Antigravity CLI detection.
-- Migrated cmux-only RPC handlers into `src/app/api/cmux.rs` so they live alongside upstream's split api modules: `pane.resize`, `layout.snapshot`, `pane.set_split_ratio`, `pane.swap`, `pane.focus`, `pane.set_zoom`, `tab.reorder`.
-
-### Fixed
-- `pane.split` and `pane.close` now emit `LayoutChanged` after `PaneCreated` / `PaneClosed` so cmux's mirrored sidebar can reshape its tree without polling.
-- Restored events.subscribe live-only behavior across all event subscription kinds (`current_sequence` high-water mark threaded into every variant), so cmux reattach no longer replays the previous session's buffered LayoutChanged events.
-- `Subscription::PaneAgentStatusChanged` with `pane_id: None` now routes through `EventHub` instead of the per-pane poller; cmux's global agent-status mirror receives every status change again.
-- `request_changes_ui` now flags `TabReorder` as UI-mutating so the TUI sidebar redraws after a reorder RPC.
-
-## [0.6.0-cmux5] - 2026-05-22
-
-### Fixed
-- `events.subscribe` no longer replays the EventHub's buffered tail to fresh subscribers. Default `last_sequence` is now the hub's current high-water sequence instead of `0`. Without this, every cmux reattach observed up to 512 historical LayoutChanged events and walked the divider through every prior position before settling on current state — visible re-animation of the user's earlier drags. Initial state is still available via `layout.snapshot` / `workspace.list` / `tab.list`; events.subscribe is for live updates only.
-
-### Added
-- `PaneTerminal::snapshot_for_replay()` returns a reset+visible-viewport ANSI byte sequence intended for `raw-pty-attach` clients on first attach. Not yet wired into the subscribe path; the events.subscribe fix above already eliminates the user-visible replay.
-
-## [0.6.0-cmux4] - 2026-05-21
-
-### Fixed
-- raw-pty-attach replay race: the per-pane history ring was appended under a Mutex but the broadcast send happened after the lock dropped, so a subscribe call landing between append and send could observe the byte in both the snapshot and the live receiver — duplicate first frame on cmux reattach. Hold the lock for the combined append + send so subscribers see exactly one delivery per byte.
-
-## [0.6.0-cmux3] - 2026-05-21
-
-### Added
-- `pane.set_zoom` JSON-RPC method and matching `pane.zoomed` event broadcast both from `toggle_zoom` (TUI keybind) and the new RPC handler. Lets external clients (cmux) mirror tmux-like single-pane zoom across attached views — the daemon now emits `(workspace_id, tab_id, pane_id, zoomed)` whenever the active tab's zoom state flips, regardless of which client triggered it.
-
-## [0.6.0-cmux2] - 2026-05-21
-
-### Added
-- raw-pty-attach now replays a per-pane history snapshot (256 KiB ring) before live broadcast forwarding starts, giving cmux reattach tmux-like semantics: when the user quits cmux and relaunches, the pane shows the existing terminal state instead of a blank surface. The reader appends to the ring under the same lock that `subscribe_raw_pty_with_replay` reads, so a contiguous prefix + future deliveries are guaranteed.
-
-## [0.6.0-cmux1] - 2026-05-21
-
-### Changed
-- Rebased onto upstream `v0.6.0` (keybinding v2, integrations tab, Kiro CLI detection, Kitty graphics fix, clipboard image cap, claude subagent fix, etc.). Carries forward all `0.5.12-cmuxN` cmux-fork patches: api-bridge, raw-pty-attach, layout snapshot/mutation RPCs, LayoutChanged/TabReordered/WorkspaceReordered events, TUI mouse drag emit, login-shell pane spawn.
-
-## [0.5.12-cmux9] - 2026-05-21
-
-### Fixed
-- TUI mouse drag of split divider now emits `LayoutChanged`. The `mouse.rs` PaneSplit drag handler mutated `ws.layout.set_ratio_at()` but never pushed to `pending_layout_changes`, so cmux's `HerdrDividerSync` never saw remote ratio updates and split positions drifted between TUI and cmux until a structural mutation forced a refresh. Mirrors the keyboard `resize_pane` path and the JSON-RPC `pane.set_split_ratio` handler. Also gates `mark_session_dirty()` on actual mutation so failed (path-not-found) drags don't dirty the session.
-
-### Added
-- New `WorkspaceReordered` event broadcast from `move_workspace` (TUI drag-reorder of sidebar workspaces). Adds `Subscription::WorkspaceReordered`, `EventKind::WorkspaceReordered`, and `EventData::WorkspaceReordered { workspace_ids }`. cmux subscribes and refreshes the sidebar list on receipt. Emit is suppressed when the resolved target index equals source (no-op move).
-
-## [0.5.12-cmux8] - 2026-05-21
-
-### Fixed
-- `pane.split` and `pane.close` now also emit `LayoutChanged`. cmux subscribes to layout.changed (not pane.created/closed) and uses the LayoutChanged tree to materialize / drop panes via HerdrInboundLayoutSync; without this emit cmux missed every TUI-driven split / close. Caught by an end-to-end audit script that subscribes with cmux's exact event list and walks every mutation type.
-
-## [0.5.12-cmux7] - 2026-05-21
-
-### Added
-- TUI mutations now emit `WorkspaceCreated`, `TabCreated`, and `TabClosed` events alongside the existing rename / reorder / layout events. cmux's sidebar refreshes on each so the workspace list matches daemon state without waiting for the 30s poll.
-
-## [0.5.12-cmux6] - 2026-05-21
-
-### Fixed
-- `Subscription::PaneAgentStatusChanged` required a `pane_id` field, but cmux's sidebar subscribes globally (no pane filter) to drive the blocked-count badge. Daemon rejected the entire `events.subscribe` request with `missing field 'pane_id'`, force-closed the connection, and cmux's pump looped on EOF forever. Make `pane_id` optional and treat the field-less form as a broadcast subscription that forwards every `pane.agent_status_changed` event verbatim.
-
-## [0.5.12-cmux5] - 2026-05-21
-
-### Fixed
-- `events.subscribe` rejected `workspace.renamed` as an unknown variant; cmux's pump subscribed to it among others, so every connection landed in invalid_request and was force-closed before any event flowed. Add the missing `WorkspaceRenamed` variant to `Subscription` and wire it through `ActiveSubscription`. With cmux5 the long-lived events stream actually stays open and TUI mutations propagate to cmux in real time.
-- Pane shells now spawn as login shells (`-l`) so `.zprofile` runs and Homebrew / nvm / asdf init scripts populate `PATH` before `.zshrc`. cmux launches the daemon from a launchd-derived environment that lacks `/opt/homebrew/bin`; without `-l`, every herdr panel emitted `brew: command not found` on start.
-
-## [0.5.12-cmux4] - 2026-05-20
-
-### Fixed
-- HeadlessServer::run (the loop behind `herdr-cmux --session NAME server`) now drains `state.pending_events` / `pending_layout_changes` every tick. cmux2/cmux3 added the buffer pattern but only wired the drain into App::run; in headless mode the buffers grew without ever being emitted, so TUI-side split / rename / reorder never reached cmux's `events.subscribe` stream. With cmux4, TUI mutations finally propagate to cmux in real time.
-
-## [0.5.12-cmux3] - 2026-05-20
-
-### Added
-- TUI rename modal and tab reorder action now emit `WorkspaceRenamed`, `TabRenamed`, and `TabReordered` API events alongside the existing JSON-RPC handlers. Cmux (and any other API subscriber) now picks up rename/reorder mutations regardless of which surface initiated them.
-
-## [0.5.12-cmux2] - 2026-05-20
-
-### Added
-- TUI mutations (split, close, focus, navigate, cycle, resize, swap, switch_workspace, switch_tab) now buffer pending API events for `App::tick` to emit, so external clients (cmux, headless API consumers) stay in sync with herdr's TUI in real time.
-
-### Fixed
-- `Version::parse` tolerates `-cmux*` prerelease suffixes so the saved release-notes preview check succeeds for fork builds.
-- API daemon: every JSON-RPC call now uses a fresh one-shot socket connection (matching the daemon's one-line-per-connection protocol), eliminating the EPIPE storm that hit cmux on second/third request.
-
-### Changed
-- CI matrix dropped macOS leg; the macOS GitHub runner deadlocks `client_mode` integration tests for 45+ minutes. Linux remains the only deploy target for the cmux remote-workspace daemon.
-
-## [0.5.12-cmux1] - 2026-05-20
-
-### Added
-- cmux fork build with api-bridge (SSH-tunneled JSON-RPC), raw-pty-attach (external GUI clients), layout snapshot/mutation RPCs, LayoutChanged/TabReordered events, pane.resize.
+- Lifecycle-authority agent integrations such as Pi and OpenCode no longer trigger a repeated detection reset loop that could flood logs, drive high CPU, and make the UI lag or stop responding. (#560, #565, thanks @dzevs)
 
 ## [0.6.9] - 2026-06-10
 
@@ -848,7 +714,7 @@ This is a hotfix for v0.6.3. See the v0.6.3 notes for the full feature release.
 ### Added
 - Added a local Unix socket API for controlling running herdr sessions, including workspace and pane management, pane reads, text/key input, pane splitting, and output waits.
 - Added event subscriptions over the socket API for workspace and pane lifecycle events, pane output matches, and agent state changes.
-- Added CLI wrappers on top of the socket API with `herdr workspace ...`, `herdr pane ...`, and `herdr wait ...`, using compact public ids like `1` and `1-2` for scripting and agent orchestration.
+- Added CLI wrappers on top of the socket API with `herdr workspace ...`, `herdr pane ...`, and `herdr wait ...`, using compact public ids for scripting and agent orchestration.
 - Added a settings popup with mouse support for changing themes, sound alerts, and toast notifications from inside herdr.
 - Added 9 built-in themes: catppuccin, tokyo night, dracula, nord, gruvbox, one dark, solarized, kanagawa, and rosé pine.
 - Added interactive pane scrollbars, manual sidebar resizing, and upstream git ahead/behind indicators in the workspace sidebar.

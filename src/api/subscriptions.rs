@@ -125,6 +125,10 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceRenamed,
                 last_sequence: 0,
             })),
+            Subscription::WorkspaceMoved {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorkspaceMoved,
+                last_sequence: 0,
+            })),
             Subscription::WorkspaceClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceClosed,
                 last_sequence,
@@ -136,6 +140,18 @@ impl ActiveSubscription {
             Subscription::WorkspaceReordered {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceReordered,
                 last_sequence,
+            })),
+            Subscription::WorktreeCreated {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorktreeCreated,
+                last_sequence: 0,
+            })),
+            Subscription::WorktreeOpened {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorktreeOpened,
+                last_sequence: 0,
+            })),
+            Subscription::WorktreeRemoved {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorktreeRemoved,
+                last_sequence: 0,
             })),
             Subscription::TabCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabCreated,
@@ -157,6 +173,10 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::TabReordered,
                 last_sequence,
             })),
+            Subscription::TabMoved {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::TabMoved,
+                last_sequence: 0,
+            })),
             Subscription::PaneCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneCreated,
                 last_sequence,
@@ -168,6 +188,10 @@ impl ActiveSubscription {
             Subscription::PaneFocused {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneFocused,
                 last_sequence,
+            })),
+            Subscription::PaneMoved {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::PaneMoved,
+                last_sequence: 0,
             })),
             Subscription::PaneExited {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneExited,
@@ -233,38 +257,29 @@ impl ActiveSubscription {
                 pane_id,
                 agent_status,
             } => {
-                if let Some(pid) = pane_id {
-                    let last_sequence = event_hub.current_sequence();
-                    let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pid, api_tx)?;
-                    let last_status = probe.agent_status;
-                    let last_presentation = PanePresentationSnapshot::from(&probe);
-                    let initial_event = agent_status
-                        .is_some_and(|wanted| wanted == probe.agent_status)
-                        .then_some(PaneAgentStatusChangedEvent {
-                            pane_id: probe.pane_id,
-                            workspace_id: probe.workspace_id,
-                            agent_status: probe.agent_status,
-                            agent: probe.agent,
-                            title: probe.title,
-                            display_agent: probe.display_agent,
-                            custom_status: probe.custom_status,
-                            state_labels: probe.state_labels,
-                        });
+                let last_sequence = event_hub.current_sequence();
+                let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pane_id, api_tx)?;
+                let last_status = probe.agent_status;
+                let last_presentation = PanePresentationSnapshot::from(&probe);
+                let initial_event = agent_status
+                    .is_some_and(|wanted| wanted == probe.agent_status)
+                    .then_some(PaneAgentStatusChangedEvent {
+                        pane_id: probe.pane_id.clone(),
+                        workspace_id: probe.workspace_id,
+                        agent_status: probe.agent_status,
+                        agent: probe.agent,
+                        title: probe.title,
+                        display_agent: probe.display_agent,
+                        custom_status: probe.custom_status,
+                        state_labels: probe.state_labels,
+                    });
 
-                    Ok(Self::AgentStatusChanged(Box::new(
-                        ActiveAgentStatusChangedSubscription {
-                            pane_id: pid,
-                            status_filter: agent_status,
-                            last_status: Some(last_status),
-                            last_presentation: Some(last_presentation),
-                            last_sequence,
-                            initial_event,
-                            request_prefix: format!("{request_id}:sub:{index}"),
-                        },
-                    )))
-                } else {
-                    Ok(Self::Event(ActiveEventSubscription {
-                        event_kind: crate::api::schema::EventKind::PaneAgentStatusChanged,
+                Ok(Self::AgentStatusChanged(Box::new(
+                    ActiveAgentStatusChangedSubscription {
+                        pane_id: probe.pane_id,
+                        status_filter: agent_status,
+                        last_status: Some(last_status),
+                        last_presentation: Some(last_presentation),
                         last_sequence,
                     }))
                 }
@@ -323,7 +338,7 @@ impl ActiveOutputMatchedSubscription {
                 Some(SubscriptionEventEnvelope {
                     event: SubscriptionEventKind::PaneOutputMatched,
                     data: SubscriptionEventData::PaneOutputMatched(PaneOutputMatchedEvent {
-                        pane_id: self.pane_id.clone(),
+                        pane_id: read.pane_id.clone(),
                         matched_line,
                         read,
                     }),

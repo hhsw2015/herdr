@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -134,7 +134,7 @@ pub enum ClientInputEvent {
 }
 
 impl ClientKeyKind {
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn from_crossterm(kind: crossterm::event::KeyEventKind) -> Self {
         match kind {
             crossterm::event::KeyEventKind::Press => Self::Press,
@@ -153,7 +153,7 @@ impl ClientKeyKind {
 }
 
 impl ClientKeyCode {
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn from_crossterm(code: crossterm::event::KeyCode) -> Option<Self> {
         use crossterm::event::KeyCode;
         Some(match code {
@@ -205,7 +205,7 @@ impl ClientKeyCode {
 }
 
 impl ClientMouseButton {
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn from_crossterm(button: crossterm::event::MouseButton) -> Self {
         match button {
             crossterm::event::MouseButton::Left => Self::Left,
@@ -224,7 +224,7 @@ impl ClientMouseButton {
 }
 
 impl ClientMouseKind {
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn from_crossterm(kind: crossterm::event::MouseEventKind) -> Option<Self> {
         use crossterm::event::MouseEventKind;
         Some(match kind {
@@ -385,6 +385,20 @@ pub enum ClientMessage {
 
     /// Structured input events from platform clients that do not expose Unix-style raw bytes.
     InputEvents { events: Vec<ClientInputEvent> },
+
+    /// Switch this connection into read-only terminal observe mode.
+    ObserveTerminal {
+        /// Pane, terminal, or agent target to observe.
+        target: String,
+    },
+
+    /// Switch this connection into writable terminal control mode.
+    ControlTerminal {
+        /// Pane, terminal, or agent target to control.
+        target: String,
+        /// Replace an existing writable controller for this terminal.
+        takeover: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,7 +430,7 @@ pub struct CellData {
     pub fg: u32,
     /// Background color as a packed u32.
     pub bg: u32,
-    /// Bitmask of style modifiers (bold, italic, etc.).
+    /// Bitmask of style modifiers (bold, italic, etc.) plus Herdr extension bits.
     pub modifier: u16,
     /// Whether this cell should be skipped during diff-based rendering.
     pub skip: bool,
@@ -632,6 +646,12 @@ pub enum ServerMessage {
         data: String,
     },
 
+    /// Set the foreground client's outer terminal window title.
+    WindowTitle {
+        /// Sanitized title to write with OSC 0. `None` restores Herdr's default title.
+        title: Option<String>,
+    },
+
     /// Client-local runtime config changed on disk; refresh it without reconnecting.
     ReloadSoundConfig,
 
@@ -720,15 +740,30 @@ fn u32_to_color(val: u32) -> ratatui::style::Color {
     }
 }
 
+const UNDERLINE_STYLE_SHIFT: u16 = 12;
+const UNDERLINE_STYLE_MASK: u16 = 0xF000;
+
 /// Converts a ratatui `Modifier` bitmask to a u16 for wire transport.
 pub(crate) fn modifier_to_u16(modifier: ratatui::style::Modifier) -> u16 {
     modifier.bits()
 }
 
+pub(crate) fn underline_style_from_modifier(modifier: u16) -> u8 {
+    ((modifier & UNDERLINE_STYLE_MASK) >> UNDERLINE_STYLE_SHIFT) as u8
+}
+
+pub(crate) fn modifier_with_underline_style(
+    modifier: ratatui::style::Modifier,
+    underline_style: u8,
+) -> ratatui::style::Modifier {
+    let bits = modifier.bits() | ((u16::from(underline_style) & 0x0F) << UNDERLINE_STYLE_SHIFT);
+    ratatui::style::Modifier::from_bits_retain(bits)
+}
+
 /// Converts a u16 back to a ratatui `Modifier`.
 #[cfg(test)]
 fn u16_to_modifier(val: u16) -> ratatui::style::Modifier {
-    ratatui::style::Modifier::from_bits_truncate(val)
+    ratatui::style::Modifier::from_bits_truncate(val & !UNDERLINE_STYLE_MASK)
 }
 
 // ---------------------------------------------------------------------------
@@ -940,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn client_message_wire_tags_preserve_protocol_13_order() {
+    fn client_message_wire_tags_preserve_protocol_15_order() {
         fn tag(msg: &ClientMessage) -> u8 {
             *bincode::serde::encode_to_vec(msg, bincode::config::standard())
                 .unwrap()
@@ -998,6 +1033,19 @@ mod tests {
             6
         );
         assert_eq!(tag(&ClientMessage::InputEvents { events: Vec::new() }), 7);
+        assert_eq!(
+            tag(&ClientMessage::ObserveTerminal {
+                target: "w1:p1".to_owned(),
+            }),
+            8
+        );
+        assert_eq!(
+            tag(&ClientMessage::ControlTerminal {
+                target: "w1:p1".to_owned(),
+                takeover: false,
+            }),
+            9
+        );
     }
 
     #[test]
@@ -1117,6 +1165,29 @@ mod tests {
     fn client_attach_terminal_roundtrip() {
         let msg = ClientMessage::AttachTerminal {
             terminal_id: "term_123".to_owned(),
+            takeover: true,
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn client_observe_terminal_roundtrip() {
+        let msg = ClientMessage::ObserveTerminal {
+            target: "w1:p1".to_owned(),
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn client_control_terminal_roundtrip() {
+        let msg = ClientMessage::ControlTerminal {
+            target: "w1:p1".to_owned(),
             takeover: true,
         };
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
@@ -1287,6 +1358,17 @@ mod tests {
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn server_window_title_roundtrip() {
+        for title in [Some("herdr api".to_owned()), None] {
+            let msg = ServerMessage::WindowTitle { title };
+            let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+            let (decoded, _): (ServerMessage, _) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+            assert_eq!(msg, decoded);
+        }
     }
 
     #[test]

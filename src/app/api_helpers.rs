@@ -21,11 +21,16 @@ pub(super) fn tab_attention_priority(state: crate::detect::AgentState, seen: boo
 /// Returns None for unrecognized input so the caller can surface a clear
 /// `invalid_key` error instead of silently dropping.
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let normalized = normalize_api_key_alias(key.trim());
+    let (code, modifiers) = crate::config::parse_key_combo(normalized)?;
+    Some(crossterm::event::KeyEvent::new(code, modifiers))
+}
 
-    let normalized = key.trim();
-    if normalized.is_empty() {
-        return None;
+fn normalize_api_key_alias(key: &str) -> &str {
+    match key {
+        "C-c" | "c-c" => "ctrl+c",
+        "+" => "plus",
+        _ => key,
     }
 
     // Strip modifier prefixes: ctrl+, shift+, alt+, super+ (case-insensitive,
