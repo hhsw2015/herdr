@@ -238,8 +238,6 @@ pub enum Method {
     LayoutSnapshot(LayoutSnapshotParams),
     #[serde(rename = "tab.reorder")]
     TabReorder(TabReorderParams),
-    #[serde(rename = "events.wait")]
-    EventsWait(EventsWaitParams),
 }
 
 #[cfg(test)]
