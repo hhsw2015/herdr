@@ -243,7 +243,6 @@ const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
     ("cline", include_str!("manifests/cline.toml")),
     ("codex", include_str!("manifests/codex.toml")),
     ("cursor", include_str!("manifests/cursor.toml")),
-    ("devin", include_str!("manifests/devin.toml")),
     ("droid", include_str!("manifests/droid.toml")),
     ("gemini", include_str!("manifests/gemini.toml")),
     ("grok", include_str!("manifests/grok.toml")),
@@ -288,7 +287,7 @@ fn manifest_cache() -> &'static RwLock<ManifestCache> {
 
 fn build_manifest_cache() -> ManifestCache {
     ManifestCache {
-        manifests: Agent::SCREEN_MANIFEST_AGENTS
+        manifests: Agent::ALL
             .into_iter()
             .map(|agent| (agent, load_manifest_uncached(agent)))
             .collect(),

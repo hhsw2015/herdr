@@ -85,7 +85,6 @@ impl TerminalRuntime {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         shell_config: crate::pane::PaneShellConfig<'_>,
-        launch_env: &crate::pane::PaneLaunchEnv,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
@@ -98,7 +97,6 @@ impl TerminalRuntime {
             scrollback_limit_bytes,
             host_terminal_theme,
             shell_config,
-            launch_env,
             events,
             render_notify,
             render_dirty,
@@ -106,8 +104,6 @@ impl TerminalRuntime {
         .map(Self)
     }
 
-    // Wrapper mirrors pane runtime construction arguments.
-    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_initial_history(
         pane_id: PaneId,
         rows: u16,
@@ -116,7 +112,6 @@ impl TerminalRuntime {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         shell_config: crate::pane::PaneShellConfig<'_>,
-        launch_env: &crate::pane::PaneLaunchEnv,
         initial_history_ansi: Option<&str>,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
@@ -130,7 +125,6 @@ impl TerminalRuntime {
             scrollback_limit_bytes,
             host_terminal_theme,
             shell_config,
-            launch_env,
             initial_history_ansi,
             events,
             render_notify,
@@ -139,15 +133,13 @@ impl TerminalRuntime {
         .map(Self)
     }
 
-    // Wrapper mirrors pane runtime construction arguments.
-    #[allow(clippy::too_many_arguments)]
     pub fn spawn_shell_command(
         pane_id: PaneId,
         rows: u16,
         cols: u16,
         cwd: std::path::PathBuf,
         command: &str,
-        launch_env: &crate::pane::PaneLaunchEnv,
+        extra_env: &[(String, String)],
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         events: mpsc::Sender<AppEvent>,
@@ -160,7 +152,7 @@ impl TerminalRuntime {
             cols,
             cwd,
             command,
-            launch_env,
+            extra_env,
             scrollback_limit_bytes,
             host_terminal_theme,
             events,
@@ -176,7 +168,6 @@ impl TerminalRuntime {
         cols: u16,
         cwd: std::path::PathBuf,
         argv: &[String],
-        launch_env: &crate::pane::PaneLaunchEnv,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         events: mpsc::Sender<AppEvent>,
@@ -189,7 +180,6 @@ impl TerminalRuntime {
             cols,
             cwd,
             argv,
-            launch_env,
             scrollback_limit_bytes,
             host_terminal_theme,
             events,
@@ -224,6 +214,26 @@ impl TerminalRuntime {
 
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
+    }
+
+    /// Snapshot existing raw-pty bytes plus a live broadcast subscription.
+    /// Used by raw-pty-attach to give cmux reattach tmux-like behavior:
+    /// the user sees the current terminal state on attach instead of a
+    /// blank pane. Atomic snapshot+subscribe via the inner runtime.
+    pub fn subscribe_raw_pty_with_replay(
+        &self,
+    ) -> (bytes::Bytes, tokio::sync::broadcast::Receiver<bytes::Bytes>) {
+        self.0.subscribe_raw_pty_with_replay()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn send_raw_pty_for_test(&self, bytes: bytes::Bytes) -> usize {
+        self.0.send_raw_pty_for_test(bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_pane_runtime(runtime: crate::pane::PaneRuntime) -> Self {
+        Self(runtime)
     }
 
     #[cfg(unix)]
@@ -305,6 +315,26 @@ impl TerminalRuntime {
 
     pub fn snapshot_history(&self) -> Option<String> {
         self.0.snapshot_history()
+    }
+
+    pub fn visible_screen_text(&self) -> Option<String> {
+        self.0.visible_screen_text()
+    }
+
+    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
+        self.0.visible_screen_hash()
+    }
+
+    pub fn visible_screen_region(
+        &self,
+        last_rows: Option<u32>,
+        first_rows: Option<u32>,
+    ) -> Option<String> {
+        self.0.visible_screen_region(last_rows, first_rows)
+    }
+
+    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
+        self.0.visible_screen_snapshot()
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
@@ -408,10 +438,6 @@ impl TerminalRuntime {
 
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         self.0.foreground_cwd()
-    }
-
-    pub fn child_pid(&self) -> Option<u32> {
-        self.0.child_pid()
     }
 
     pub(crate) fn current_size(&self) -> (u16, u16) {

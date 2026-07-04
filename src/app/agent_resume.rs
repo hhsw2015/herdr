@@ -1,7 +1,10 @@
 use std::time::Instant;
 
 use bytes::Bytes;
-use ratatui::layout::Rect;
+use ratatui::{
+    layout::Rect,
+    widgets::{Block, Borders},
+};
 
 use super::App;
 
@@ -125,12 +128,7 @@ impl App {
         tab: &crate::workspace::Tab,
         terminal_area: Rect,
     ) -> Vec<crate::layout::PaneInfo> {
-        let mut pane_infos = derived_pending_agent_resume_pane_infos(
-            tab,
-            terminal_area,
-            self.state.pane_borders,
-            self.state.pane_gaps,
-        );
+        let mut pane_infos = derived_pending_agent_resume_pane_infos(tab, terminal_area);
 
         if self.state.active == Some(ws_idx)
             && self
@@ -225,12 +223,6 @@ impl App {
             );
             return false;
         };
-        let Some(launch_env) = self
-            .find_pane(pane_id)
-            .and_then(|(ws_idx, _)| self.pane_launch_env(ws_idx, pane_id, Vec::new()))
-        else {
-            return false;
-        };
 
         let runtime = match crate::terminal::TerminalRuntime::spawn(
             pane_id,
@@ -240,7 +232,6 @@ impl App {
             self.state.pane_scrollback_limit_bytes,
             host_terminal_theme,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
-            &launch_env,
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
@@ -287,13 +278,17 @@ impl App {
 fn derived_pending_agent_resume_pane_infos(
     tab: &crate::workspace::Tab,
     terminal_area: Rect,
-    pane_borders: bool,
-    pane_gaps: bool,
 ) -> Vec<crate::layout::PaneInfo> {
-    crate::ui::apply_pane_chrome(tab.layout.panes(terminal_area), pane_borders, pane_gaps)
+    let multi_pane = tab.layout.pane_count() > 1;
+    tab.layout
+        .panes(terminal_area)
         .into_iter()
         .map(|mut info| {
-            let pane_inner = crate::ui::pane_inner_rect(info.rect, info.borders);
+            let pane_inner = if multi_pane {
+                Block::default().borders(Borders::ALL).inner(info.rect)
+            } else {
+                terminal_area
+            };
             info.inner_rect = stable_terminal_inner_rect(pane_inner);
             info
         })
@@ -617,7 +612,6 @@ mod tests {
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),
             scrollbar_rect: None,
-            borders: ratatui::widgets::Borders::ALL,
             is_focused: true,
         }];
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
@@ -734,7 +728,6 @@ mod tests {
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),
             scrollbar_rect: None,
-            borders: ratatui::widgets::Borders::ALL,
             is_focused: true,
         }];
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);

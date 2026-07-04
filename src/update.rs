@@ -73,6 +73,8 @@ pub struct Version {
 impl Version {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.strip_prefix('v').unwrap_or(s);
+        // Strip any pre-release / build suffix after `-` or `+` (e.g. "0.5.12-cmux1").
+        let s = s.split(['-', '+']).next().unwrap_or(s);
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
             return None;
@@ -638,12 +640,6 @@ fn install_windows_update_with_installer(channel: UpdateChannel) -> Result<(), S
             "irm https://herdr.dev/install.ps1 | iex",
         ])
         .env("HERDR_CHANNEL", channel.as_str())
-        // Drop any inherited PSModulePath. When herdr is launched from
-        // PowerShell 7, its Core module paths come first and Windows
-        // PowerShell 5.1 (this `powershell`) fails to autoload cmdlets like
-        // Get-FileHash. Removing it lets 5.1 compute its own default path.
-        // See PowerShell/PowerShell#8635.
-        .env_remove("PSModulePath")
         .status()
         .map_err(|err| format!("failed to run Windows installer: {err}"))?;
 
@@ -2732,10 +2728,7 @@ mod tests {
             server: crate::api::RuntimeStatus {
                 version: Some("0.6.2".to_string()),
                 protocol: Some(76),
-                capabilities: Some(crate::api::schema::ServerCapabilities {
-                    live_handoff: true,
-                    detached_server_daemon: true,
-                }),
+                capabilities: Some(crate::api::schema::ServerCapabilities { live_handoff: true }),
             },
         };
 

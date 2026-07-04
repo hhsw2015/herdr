@@ -37,6 +37,12 @@ impl EventHub {
             .collect()
     }
 
+    /// Current high-water sequence — used by `events.subscribe` so a
+    /// fresh subscription only sees events emitted AFTER it starts,
+    /// not the buffered tail. Otherwise cmux's reattach replays
+    /// every cached LayoutChanged from the previous session and the
+    /// user watches the divider re-animate through old positions
+    /// before settling on current state.
     pub fn current_sequence(&self) -> u64 {
         let Ok(state) = self.inner.lock() else {
             return 0;

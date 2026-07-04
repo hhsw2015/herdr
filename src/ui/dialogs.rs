@@ -2,19 +2,31 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph},
     Frame,
 };
 
-use super::text::{display_width_u16, truncate_end};
 use super::widgets::{
     action_button_row_rects, centered_popup_rect, panel_contrast_fg, render_action_button,
     render_modal_header, render_modal_shell, render_panel_shell, ActionButtonSpec,
 };
 use crate::app::{state::WorktreeOpenState, AppState, Mode};
 
-const NEW_LINKED_WORKTREE_POPUP_WIDTH: u16 = 68;
-const NEW_LINKED_WORKTREE_POPUP_HEIGHT: u16 = 12;
+fn truncate_text(text: &str, max_width: usize) -> String {
+    let len = text.chars().count();
+    if len <= max_width {
+        return text.to_string();
+    }
+    if max_width <= 1 {
+        return "…".into();
+    }
+    format!(
+        "{}…",
+        text.chars()
+            .take(max_width.saturating_sub(1))
+            .collect::<String>()
+    )
+}
 
 pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
     let rects = action_button_row_rects(
@@ -114,12 +126,7 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
 }
 
 pub(crate) fn new_linked_worktree_inner_rect(area: Rect) -> Option<Rect> {
-    centered_popup_rect(
-        area,
-        NEW_LINKED_WORKTREE_POPUP_WIDTH,
-        NEW_LINKED_WORKTREE_POPUP_HEIGHT,
-    )
-    .map(|popup| {
+    centered_popup_rect(area, 68, 10).map(|popup| {
         Rect::new(
             popup.x + 1,
             popup.y + 1,
@@ -233,16 +240,10 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
     };
 
     super::dim_background(frame, area);
-    let Some(inner) = render_modal_shell(
-        frame,
-        area,
-        NEW_LINKED_WORKTREE_POPUP_WIDTH,
-        NEW_LINKED_WORKTREE_POPUP_HEIGHT,
-        &app.palette,
-    ) else {
+    let Some(inner) = render_modal_shell(frame, area, 68, 10, &app.palette) else {
         return;
     };
-    if inner.height < 9 {
+    if inner.height < 7 {
         return;
     }
 
@@ -252,7 +253,7 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
     ])
@@ -292,9 +293,7 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         );
     } else if let Some(error) = &create.error {
         frame.render_widget(
-            Paragraph::new(format!(" {error}"))
-                .style(Style::default().fg(app.palette.red))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(format!(" {error}")).style(Style::default().fg(app.palette.red)),
             rows[5],
         );
     }
@@ -482,27 +481,27 @@ pub(super) fn render_open_existing_worktree_overlay(app: &AppState, frame: &mut 
         let status = entry.status_label();
         let title_width = inner
             .width
-            .saturating_sub(display_width_u16(status))
+            .saturating_sub(status.len() as u16)
             .saturating_sub(4) as usize;
         let mut title = format!(
             "{marker} {}",
-            truncate_end(&entry.display_name(), title_width)
+            truncate_text(&entry.display_name(), title_width)
         );
         if !status.is_empty() {
             let pad = inner
                 .width
-                .saturating_sub(display_width_u16(&title))
-                .saturating_sub(display_width_u16(status))
+                .saturating_sub(title.chars().count() as u16)
+                .saturating_sub(status.len() as u16)
                 .max(1);
             title.push_str(&" ".repeat(pad as usize));
             title.push_str(status);
         }
         frame.render_widget(
-            Paragraph::new(truncate_end(&title, inner.width as usize)).style(row_style),
+            Paragraph::new(truncate_text(&title, inner.width as usize)).style(row_style),
             Rect::new(inner.x, y, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new(truncate_end(
+            Paragraph::new(truncate_text(
                 &format!("  {}", entry.path.display()),
                 inner.width as usize,
             ))
@@ -756,13 +755,9 @@ pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        app::{state::WorktreeCreateState, AppState},
-        workspace::Workspace,
-    };
-    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+    use crate::{app::AppState, workspace::Workspace};
 
-    use super::{confirm_close_overlay_text, render_new_linked_worktree_overlay};
+    use super::confirm_close_overlay_text;
 
     #[test]
     fn confirm_close_text_reports_parent_group_scope() {
@@ -790,53 +785,5 @@ mod tests {
 
         assert_eq!(title, "Close worktree group?");
         assert_eq!(detail, "main — 2 workspaces, 2 panes");
-    }
-
-    #[test]
-    fn new_worktree_error_renders_fatal_stderr_line() {
-        let mut app = AppState::test_new();
-        app.name_input = "foo".into();
-        app.worktree_create = Some(WorktreeCreateState {
-            source_workspace_id: "source".into(),
-            source_checkout_path: "/repo/herdr".into(),
-            source_existing_membership: None,
-            source_repo_root: "/repo/herdr".into(),
-            repo_key: "repo-key".into(),
-            repo_name: "herdr".into(),
-            branch: "foo".into(),
-            checkout_path: "/repo/.worktrees/herdr/foo".into(),
-            error: Some(
-                "Preparing worktree (new branch 'foo')\nfatal: a branch named 'foo' already exists"
-                    .into(),
-            ),
-            creating: false,
-        });
-
-        let mut terminal =
-            Terminal::new(TestBackend::new(100, 30)).expect("test terminal should initialize");
-        terminal
-            .draw(|frame| render_new_linked_worktree_overlay(&app, frame, Rect::new(0, 0, 100, 30)))
-            .expect("new worktree overlay should render");
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-
-        assert!(rendered.contains("fatal: a branch named 'foo' already exists"));
-    }
-
-    #[test]
-    fn new_worktree_hit_test_geometry_matches_modal_size() {
-        let area = Rect::new(0, 0, 100, 30);
-        let inner = super::new_linked_worktree_inner_rect(area).unwrap();
-        let (create, cancel) = super::new_linked_worktree_button_rects(inner);
-
-        assert_eq!(inner.width, super::NEW_LINKED_WORKTREE_POPUP_WIDTH - 2);
-        assert_eq!(inner.height, super::NEW_LINKED_WORKTREE_POPUP_HEIGHT - 2);
-        assert_eq!(create.y, inner.y + inner.height - 1);
-        assert_eq!(cancel.y, inner.y + inner.height - 1);
     }
 }

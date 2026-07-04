@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use crate::api::schema::{EventData, EventEnvelope, EventKind};
-#[cfg(test)]
 use tracing::error;
 
 use super::{
@@ -38,23 +36,6 @@ impl App {
             .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
     }
 
-    pub(super) fn cwd_for_pane_in_workspace(
-        &self,
-        ws_idx: usize,
-        pane_id: crate::layout::PaneId,
-    ) -> Option<PathBuf> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
-        ws.tabs
-            .get(tab_idx)?
-            .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-    }
-
-    pub(super) fn focused_pane_cwd_in_workspace(&self, ws_idx: usize) -> Option<PathBuf> {
-        let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id()?;
-        self.cwd_for_pane_in_workspace(ws_idx, pane_id)
-    }
-
     pub(super) fn resolve_new_terminal_cwd(&self, follow_cwd: Option<PathBuf>) -> PathBuf {
         resolve_new_terminal_cwd(&self.state.new_terminal_cwd, follow_cwd)
     }
@@ -75,51 +56,36 @@ impl App {
     }
 
     /// Create a workspace with a real PTY (needs event_tx).
-    #[cfg(test)]
     pub(crate) fn create_workspace(&mut self) {
         let follow_cwd = self
             .workspace_creation_source()
             .and_then(|ws_idx| self.seed_cwd_from_workspace(ws_idx));
         let initial_cwd = self.resolve_new_terminal_cwd(follow_cwd);
-        if let Err(e) = self.create_workspace_with_events(initial_cwd, true) {
+        if let Err(e) = self.create_workspace_with_options(initial_cwd, true) {
             error!(err = %e, "failed to create workspace");
             self.state.mode = Mode::Navigate;
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn create_tab(&mut self) {
         let custom_name = self.state.requested_new_tab_name.take();
-        let active_before = self.state.active;
         let follow_cwd = self
             .state
             .active
             .and_then(|ws_idx| self.seed_cwd_from_workspace(ws_idx));
         let initial_cwd = self.resolve_new_terminal_cwd(follow_cwd);
         match self.create_tab_with_options(initial_cwd, true) {
-            Ok(created_idx) => {
-                let created_workspace = active_before.is_none();
-                let ws_idx = if created_workspace {
-                    Some(created_idx)
-                } else {
-                    self.state.active
-                };
-                let tab_idx = if created_workspace { 0 } else { created_idx };
+            Ok(tab_idx) => {
                 if let Some(name) = custom_name {
-                    if let Some(ws) =
-                        ws_idx.and_then(|ws_idx| self.state.workspaces.get_mut(ws_idx))
+                    if let Some(ws) = self
+                        .state
+                        .active
+                        .and_then(|ws_idx| self.state.workspaces.get_mut(ws_idx))
                     {
                         if let Some(tab) = ws.tabs.get_mut(tab_idx) {
                             tab.set_custom_name(name);
                         }
                         self.schedule_session_save();
-                    }
-                }
-                if let Some(ws_idx) = ws_idx {
-                    if created_workspace {
-                        self.emit_workspace_open_events(ws_idx);
-                    } else {
-                        self.emit_tab_created_events(ws_idx, tab_idx);
                     }
                 }
             }
@@ -129,7 +95,6 @@ impl App {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn create_tab_with_options(
         &mut self,
         initial_cwd: PathBuf,
@@ -147,7 +112,6 @@ impl App {
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
-            Vec::new(),
         )?;
         let root_pane = ws.tabs[idx].root_pane;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
@@ -160,11 +124,32 @@ impl App {
         let workspace_id = self.state.workspaces[ws_idx].id.clone();
         let tab_id = self
             .public_tab_id(ws_idx, idx)
-            .unwrap_or_else(|| crate::workspace::public_tab_id_for_number(&workspace_id, idx + 1));
+            .unwrap_or_else(|| format!("{}:{}", workspace_id, idx + 1));
         let root_pane = self.state.workspaces[ws_idx].tabs[idx].root_pane.raw();
         crate::logging::tab_created(&workspace_id, &tab_id, root_pane);
         self.schedule_session_save();
+        // Mirror api.rs `tab.create`: broadcast TabCreated so cmux
+        // sees the new tab in its sidebar without polling.
+        let tab_info = self.tab_info(ws_idx, idx);
+        if let Some(tab) = tab_info {
+            self.state
+                .pending_events
+                .push(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::TabCreated,
+                    data: crate::api::schema::EventData::TabCreated { tab },
+                });
+        }
         Ok(idx)
+    }
+
+    fn emit_workspace_created(&mut self, ws_idx: usize) {
+        let info = self.workspace_info(ws_idx);
+        self.state
+            .pending_events
+            .push(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::WorkspaceCreated,
+                data: crate::api::schema::EventData::WorkspaceCreated { workspace: info },
+            });
     }
 
     pub(crate) fn create_workspace_with_options(
@@ -172,28 +157,8 @@ impl App {
         initial_cwd: PathBuf,
         focus: bool,
     ) -> std::io::Result<usize> {
-        self.create_workspace_with_launch_env(initial_cwd, focus, Vec::new())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn create_workspace_with_events(
-        &mut self,
-        initial_cwd: PathBuf,
-        focus: bool,
-    ) -> std::io::Result<()> {
-        let ws_idx = self.create_workspace_with_options(initial_cwd, focus)?;
-        self.emit_workspace_open_events(ws_idx);
-        Ok(())
-    }
-
-    pub(crate) fn create_workspace_with_launch_env(
-        &mut self,
-        initial_cwd: PathBuf,
-        focus: bool,
-        extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.estimate_pane_size();
-        let (ws, terminal, runtime) = Workspace::new_with_extra_env(
+        let (ws, terminal, runtime) = Workspace::new(
             initial_cwd,
             rows,
             cols,
@@ -203,7 +168,6 @@ impl App {
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
-            extra_env,
         )?;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
@@ -214,6 +178,9 @@ impl App {
         let workspace_id = self.state.workspaces[idx].id.clone();
         let root_pane = self.state.workspaces[idx].tabs[0].root_pane.raw();
         crate::logging::workspace_created(&workspace_id, root_pane);
+        // Mirror api.rs `workspace.create`: broadcast WorkspaceCreated
+        // so cmux's sidebar list picks up the new entry without polling.
+        self.emit_workspace_created(idx);
         if focus || self.state.active.is_none() {
             self.state.switch_workspace(idx);
             self.state.mode = Mode::Terminal;
@@ -282,54 +249,12 @@ impl App {
         Some(crate::api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             workspace_id: self.public_workspace_id(ws_idx),
-            number: tab.number,
-            label: ws.tab_display_name(tab_idx)?,
+            number: tab_idx + 1,
+            label: tab.display_name(),
             focused: self.state.active == Some(ws_idx) && ws.active_tab == tab_idx,
             pane_count: tab.panes.len(),
             agent_status: pane_agent_status(agg_state, seen),
         })
-    }
-
-    pub(crate) fn emit_workspace_open_events(&mut self, ws_idx: usize) {
-        let workspace_info = self.workspace_info(ws_idx);
-        let Some(tab) = self.tab_info(ws_idx, 0) else {
-            return;
-        };
-        let Some(root_pane) = self.root_pane_info(ws_idx, 0) else {
-            return;
-        };
-        self.emit_event(EventEnvelope {
-            event: EventKind::WorkspaceCreated,
-            data: EventData::WorkspaceCreated {
-                workspace: workspace_info,
-            },
-        });
-        self.emit_tab_and_pane_created_events(tab, root_pane);
-    }
-
-    pub(crate) fn emit_tab_created_events(&mut self, ws_idx: usize, tab_idx: usize) {
-        let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
-            return;
-        };
-        let Some(root_pane) = self.root_pane_info(ws_idx, tab_idx) else {
-            return;
-        };
-        self.emit_tab_and_pane_created_events(tab, root_pane);
-    }
-
-    fn emit_tab_and_pane_created_events(
-        &mut self,
-        tab: crate::api::schema::TabInfo,
-        root_pane: crate::api::schema::PaneInfo,
-    ) {
-        self.emit_event(EventEnvelope {
-            event: EventKind::TabCreated,
-            data: EventData::TabCreated { tab },
-        });
-        self.emit_event(EventEnvelope {
-            event: EventKind::PaneCreated,
-            data: EventData::PaneCreated { pane: root_pane },
-        });
     }
 
     pub(super) fn workspace_created_result(
@@ -362,6 +287,23 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs.get(tab_idx)?;
         self.pane_info(ws_idx, tab.root_pane)
+    }
+
+    pub(super) fn layout_tree(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> Option<crate::api::schema::LayoutTree> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let tab = ws.tabs.get(tab_idx)?;
+        let root = layout_node_to_wire(self, ws_idx, tab.layout.root())?;
+        let focused_pane_id = self.public_pane_id(ws_idx, tab.layout.focused());
+        Some(crate::api::schema::LayoutTree {
+            workspace_id: self.public_workspace_id(ws_idx),
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            root,
+            focused_pane_id,
+        })
     }
 
     pub(super) fn pane_info(
@@ -433,9 +375,9 @@ impl App {
             focused: self.state.active == Some(index),
             pane_count: ws.public_pane_numbers.len(),
             tab_count: ws.tabs.len(),
-            active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {
-                crate::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
-            }),
+            active_tab_id: self
+                .public_tab_id(index, ws.active_tab)
+                .unwrap_or_else(|| format!("{}:{}", ws.id, ws.active_tab + 1)),
             agent_status: pane_agent_status(agg_state, seen),
             worktree: ws
                 .worktree_space()
@@ -446,6 +388,36 @@ impl App {
                     checkout_path: space.checkout_path.display().to_string(),
                     is_linked_worktree: space.is_linked_worktree,
                 }),
+        }
+    }
+}
+
+fn layout_node_to_wire(
+    app: &App,
+    ws_idx: usize,
+    node: &crate::layout::Node,
+) -> Option<crate::api::schema::LayoutNode> {
+    use crate::api::schema::{LayoutNode, LayoutSplitDirection};
+    match node {
+        crate::layout::Node::Pane(pane_id) => Some(LayoutNode::Pane {
+            pane_id: app.public_pane_id(ws_idx, *pane_id)?,
+        }),
+        crate::layout::Node::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let direction = match direction {
+                ratatui::layout::Direction::Horizontal => LayoutSplitDirection::Horizontal,
+                ratatui::layout::Direction::Vertical => LayoutSplitDirection::Vertical,
+            };
+            Some(LayoutNode::Split {
+                direction,
+                ratio: *ratio,
+                first: Box::new(layout_node_to_wire(app, ws_idx, first)?),
+                second: Box::new(layout_node_to_wire(app, ws_idx, second)?),
+            })
         }
     }
 }

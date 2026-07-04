@@ -1,9 +1,11 @@
 pub mod client;
 mod event_hub;
+mod expect;
 pub mod schema;
 mod server;
 mod status;
 mod subscriptions;
+pub(crate) mod tui_probe;
 mod wait;
 
 pub use event_hub::EventHub;
@@ -27,7 +29,6 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::WorkspaceCreate(_)
             | Method::WorkspaceFocus(_)
             | Method::WorkspaceRename(_)
-            | Method::WorkspaceMove(_)
             | Method::WorkspaceClose(_)
             | Method::WorktreeCreate(_)
             | Method::WorktreeOpen(_)
@@ -35,20 +36,15 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::TabCreate(_)
             | Method::TabFocus(_)
             | Method::TabRename(_)
-            | Method::TabMove(_)
             | Method::TabClose(_)
-            | Method::LayoutApply(_)
-            | Method::LayoutSetSplitRatio(_)
             | Method::AgentRename(_)
             | Method::AgentFocus(_)
             | Method::AgentStart(_)
             | Method::PaneSplit(_)
             | Method::PaneSwap(_)
-            | Method::PaneMove(_)
             | Method::PaneZoom(_)
             | Method::PaneFocusDirection(_)
             | Method::PaneResize(_)
-            | Method::PaneFocus(_)
             | Method::PaneRename(_)
             | Method::PaneReportAgent(_)
             | Method::PaneReportAgentSession(_)
@@ -56,10 +52,12 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneClearAgentAuthority(_)
             | Method::PaneReleaseAgent(_)
             | Method::PaneClose(_)
-            | Method::PluginActionInvoke(_)
-            | Method::PluginPaneOpen(_)
-            | Method::PluginPaneFocus(_)
-            | Method::PluginPaneClose(_)
+            | Method::PaneCmuxResize(_)
+            | Method::PaneSetSplitRatio(_)
+            | Method::PaneSetZoom(_)
+            | Method::PaneCmuxSwap(_)
+            | Method::PaneFocus(_)
+            | Method::TabReorder(_)
     )
 }
 

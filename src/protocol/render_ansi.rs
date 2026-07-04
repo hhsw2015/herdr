@@ -31,9 +31,7 @@ use std::io::Write;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::protocol::{underline_style_from_modifier, CellData, FrameData};
-
-const REVERSED_MODIFIER: u16 = 1 << 6;
+use crate::protocol::{CellData, FrameData};
 
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub(crate) struct EncodedBlit {
@@ -41,6 +39,9 @@ pub(crate) struct EncodedBlit {
     pub(crate) bytes: Vec<u8>,
     /// Whether this frame was encoded as a full redraw.
     pub(crate) full: bool,
+    /// Cursor reveal bytes to write after a short quiet period.
+    #[cfg(any(windows, test))]
+    pub(crate) deferred_cursor_reveal: Option<Vec<u8>>,
     next_last_visible_cursor: Option<(u16, u16)>,
     next_last_cursor_shape: u8,
 }
@@ -62,7 +63,8 @@ impl BlitEncoder {
         self.encode_inner(frame, force_full, false)
     }
 
-    pub(crate) fn encode_with_suppressed_visible_cursor(
+    #[cfg(any(windows, test))]
+    pub(crate) fn encode_with_deferred_cursor_reveal(
         &self,
         frame: &FrameData,
         force_full: bool,
@@ -74,7 +76,7 @@ impl BlitEncoder {
         &self,
         frame: &FrameData,
         force_full: bool,
-        suppress_visible_cursor: bool,
+        defer_visible_cursor_during_content_changes: bool,
     ) -> EncodedBlit {
         let prev = if force_full {
             None
@@ -90,6 +92,12 @@ impl BlitEncoder {
         let mut bytes = Vec::new();
         let mut next_last_visible_cursor = self.last_visible_cursor;
         let mut next_last_cursor_shape = self.last_cursor_shape;
+        let suppress_visible_cursor = defer_visible_cursor_during_content_changes
+            && should_defer_visible_cursor(frame, prev, full);
+        #[cfg(any(windows, test))]
+        let deferred_cursor_reveal = suppress_visible_cursor
+            .then(|| encode_visible_cursor_reveal(frame))
+            .flatten();
         blit_frame_to_with_cursor_memory(
             &mut bytes,
             frame,
@@ -113,6 +121,8 @@ impl BlitEncoder {
         EncodedBlit {
             bytes,
             full,
+            #[cfg(any(windows, test))]
+            deferred_cursor_reveal,
             next_last_visible_cursor,
             next_last_cursor_shape,
         }
@@ -131,19 +141,6 @@ impl BlitEncoder {
     pub(crate) fn last_frame(&self) -> Option<&FrameData> {
         self.last_frame.as_ref()
     }
-}
-
-pub(crate) fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
-    if let Some(cursor) = frame.cursor.as_ref().filter(|cursor| cursor.visible) {
-        let (x, y) = clamp_cursor_position(&frame, cursor.x, cursor.y);
-        let idx = (y as usize)
-            .saturating_mul(frame.width as usize)
-            .saturating_add(x as usize);
-        if let Some(cell) = frame.cells.get_mut(idx) {
-            cell.modifier ^= REVERSED_MODIFIER;
-        }
-    }
-    frame
 }
 
 #[derive(Clone, Copy, Default)]
@@ -308,6 +305,7 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
     const UNDERLINED: u16 = 1 << 3; // 0x08
     const SLOW_BLINK: u16 = 1 << 4; // 0x10
     const RAPID_BLINK: u16 = 1 << 5; // 0x20
+    const REVERSED: u16 = 1 << 6; // 0x40
     const HIDDEN: u16 = 1 << 7; // 0x80
     const CROSSED_OUT: u16 = 1 << 8; // 0x100
 
@@ -321,13 +319,7 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
         parts.push("3");
     }
     if val & UNDERLINED != 0 {
-        parts.push(match underline_style_from_modifier(val) {
-            2 => "4:2",
-            3 => "4:3",
-            4 => "4:4",
-            5 => "4:5",
-            _ => "4",
-        });
+        parts.push("4");
     }
     if val & SLOW_BLINK != 0 {
         parts.push("5");
@@ -335,7 +327,7 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
     if val & RAPID_BLINK != 0 {
         parts.push("6");
     }
-    if val & REVERSED_MODIFIER != 0 {
+    if val & REVERSED != 0 {
         parts.push("7");
     }
     if val & HIDDEN != 0 {
@@ -490,6 +482,21 @@ fn repeat_ime_anchor_after_sync() -> bool {
     true
 }
 
+fn should_defer_visible_cursor(frame: &FrameData, prev: Option<&FrameData>, full: bool) -> bool {
+    let cursor_changed = prev.is_some_and(|prev| prev.cursor != frame.cursor);
+    frame_has_cell_changes(frame, prev, full) || cursor_changed
+}
+
+fn frame_has_cell_changes(frame: &FrameData, prev: Option<&FrameData>, full: bool) -> bool {
+    if full {
+        return true;
+    }
+    let Some(prev) = prev else {
+        return true;
+    };
+    compute_prof_blit_stats(frame, Some(prev), false).changed_cells > 0
+}
+
 /// Writes all cells in the frame (full redraw).
 fn cell_width(cell: &CellData) -> usize {
     cell.symbol.width()
@@ -584,6 +591,22 @@ fn write_ime_anchor_cursor_state(writer: &mut impl Write, cursor: HostCursorStat
     } else {
         let _ = writer.write_all(b"\x1b[?25l");
     }
+}
+
+#[cfg(any(windows, test))]
+fn encode_visible_cursor_reveal(frame: &FrameData) -> Option<Vec<u8>> {
+    let cursor = frame.cursor.as_ref()?;
+    if !cursor.visible {
+        return None;
+    }
+
+    let mut bytes = Vec::new();
+    let position = clamp_cursor_position(frame, cursor.x, cursor.y);
+    write_cursor_position(&mut bytes, position);
+    let shape = normalize_cursor_shape(cursor.shape);
+    let _ = write!(bytes, "\x1b[{} q", shape);
+    let _ = bytes.write_all(b"\x1b[?25h");
+    Some(bytes)
 }
 
 fn write_all_cells(writer: &mut impl Write, frame: &FrameData) {
@@ -876,18 +899,6 @@ mod tests {
     }
 
     #[test]
-    fn build_sgr_preserves_curly_underline_style() {
-        let modifier = crate::protocol::modifier_to_u16(
-            crate::protocol::modifier_with_underline_style(ratatui::style::Modifier::UNDERLINED, 3),
-        );
-
-        assert_eq!(
-            build_sgr(0x00_00_00_00, 0x00_00_00_00, modifier),
-            "\x1b[0;4:3;39;49m"
-        );
-    }
-
-    #[test]
     fn cells_equal_identical() {
         let a = make_cell("A", 2, 1, 0);
         let b = make_cell("A", 2, 1, 0);
@@ -1067,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn drawn_cursor_reverses_visible_cursor_cell() {
+    fn blit_encoder_can_defer_visible_cursor_reveal_for_content_changes() {
         let frame = FrameData {
             cells: vec![make_cell("A", 0, 0, 0); 9],
             width: 3,
@@ -1081,45 +1092,58 @@ mod tests {
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
         };
-        let drawn = frame_with_drawn_cursor(frame.clone());
+        let encoder = BlitEncoder::new();
 
-        assert_eq!(drawn.cells[5].modifier, REVERSED_MODIFIER);
-        assert_eq!(frame.cells[5].modifier, 0);
+        let encoded = encoder.encode_with_deferred_cursor_reveal(&frame, false);
 
-        let encoded = BlitEncoder::new().encode_with_suppressed_visible_cursor(&drawn, false);
         let output_str = String::from_utf8(encoded.bytes).unwrap();
-
-        assert!(
-            output_str.contains("\x1b[2;3H\x1b[6 q\x1b[?25l"),
-            "drawn cursor mode should park the host cursor hidden at the focused cursor position"
-        );
         assert!(
             !output_str.contains("\x1b[?25h"),
-            "drawn cursor mode should not show the host cursor"
+            "active repaint should keep the native cursor hidden"
         );
-        assert!(
-            output_str.contains("\x1b[0;7;39;49mA"),
-            "drawn cursor should be emitted as reverse-video cell content"
+        assert_eq!(
+            encoded.deferred_cursor_reveal.as_deref(),
+            Some(&b"\x1b[2;3H\x1b[6 q\x1b[?25h"[..])
         );
     }
 
     #[test]
-    fn drawn_cursor_ignores_hidden_cursor() {
-        let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
-            width: 1,
-            height: 1,
+    fn blit_encoder_can_defer_visible_cursor_reveal_for_cursor_only_changes() {
+        let prev = FrameData {
+            cells: vec![make_cell("A", 0, 0, 0); 9],
+            width: 3,
+            height: 3,
             cursor: Some(CursorState {
                 x: 0,
                 y: 0,
-                visible: false,
+                visible: true,
                 shape: 0,
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
         };
+        let mut curr = prev.clone();
+        curr.cursor = Some(CursorState {
+            x: 2,
+            y: 1,
+            visible: true,
+            shape: 0,
+        });
+        let mut encoder = BlitEncoder::new();
+        let first = encoder.encode(&prev, false);
+        encoder.commit(prev, first);
 
-        assert_eq!(frame_with_drawn_cursor(frame.clone()), frame);
+        let encoded = encoder.encode_with_deferred_cursor_reveal(&curr, false);
+
+        let output_str = String::from_utf8(encoded.bytes).unwrap();
+        assert!(
+            !output_str.contains("\x1b[?25h"),
+            "cursor-only movement should remain hidden until the debounce fires"
+        );
+        assert_eq!(
+            encoded.deferred_cursor_reveal.as_deref(),
+            Some(&b"\x1b[2;3H\x1b[0 q\x1b[?25h"[..])
+        );
     }
 
     #[test]

@@ -11,23 +11,17 @@ use tracing::warn;
 /// accent = "#f5c2e7"
 /// red = "#ff6188"
 /// ```
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
     /// Built-in theme name. Default: "catppuccin".
     pub name: Option<String>,
-    /// Follow host terminal light/dark appearance and switch between theme names.
-    pub auto_switch: bool,
-    /// Theme name used when `auto_switch` selects a dark appearance.
-    pub dark_name: Option<String>,
-    /// Theme name used when `auto_switch` selects a light appearance.
-    pub light_name: Option<String>,
     /// Custom overrides — applied on top of the selected base theme.
     pub custom: Option<CustomThemeColors>,
 }
 
 /// Per-token color overrides. All fields optional — only set what you want to change.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CustomThemeColors {
     pub accent: Option<String>,
@@ -141,22 +135,6 @@ name = "dracula"
     }
 
     #[test]
-    fn theme_auto_switch_fields_parse() {
-        let toml = r#"
-[theme]
-name = "catppuccin"
-auto_switch = true
-dark_name = "tokyo-night"
-light_name = "catppuccin-latte"
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.theme.name.as_deref(), Some("catppuccin"));
-        assert!(config.theme.auto_switch);
-        assert_eq!(config.theme.dark_name.as_deref(), Some("tokyo-night"));
-        assert_eq!(config.theme.light_name.as_deref(), Some("catppuccin-latte"));
-    }
-
-    #[test]
     fn theme_custom_overrides_parse() {
         let toml = r##"
 [theme]
@@ -180,9 +158,6 @@ red = "rgb(255, 85, 85)"
     fn theme_defaults_when_missing() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.theme.name.is_none());
-        assert!(!config.theme.auto_switch);
-        assert!(config.theme.dark_name.is_none());
-        assert!(config.theme.light_name.is_none());
         assert!(config.theme.custom.is_none());
     }
 }

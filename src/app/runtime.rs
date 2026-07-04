@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::terminal;
 
 use super::{
-    background_update_check_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
+    auto_updates_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
     AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL,
     RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
@@ -68,20 +68,6 @@ impl App {
             crate::api::schema::Method::ServerStop(_)
                 | crate::api::schema::Method::ServerLiveHandoff(_)
         );
-        if matches!(
-            &msg.request.method,
-            crate::api::schema::Method::WorktreeCreate(_)
-                | crate::api::schema::Method::WorktreeRemove(_)
-        ) {
-            self.drain_all_internal_events();
-            let deferred_changed =
-                self.handle_deferred_worktree_api_request(msg.request, msg.respond_to);
-            if !skip_default_workspace {
-                changed |= self.ensure_default_workspace();
-            }
-            self.sync_prefix_input_source(previous_mode);
-            return changed | deferred_changed;
-        }
         let response = self.handle_api_request(msg.request);
         if !skip_default_workspace {
             changed |= self.ensure_default_workspace();
@@ -172,10 +158,6 @@ impl App {
             }
             crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } => {
                 self.update_host_terminal_theme(kind, color)
-            }
-            crate::raw_input::RawInputEvent::HostColorSchemeChanged(appearance) => {
-                self.query_host_terminal_theme();
-                self.set_host_terminal_appearance(appearance, true)
             }
             crate::raw_input::RawInputEvent::Unsupported => false,
         };
@@ -354,10 +336,18 @@ impl App {
     }
 
     fn agent_panel_has_animation(&self) -> bool {
-        self.state
-            .workspaces
-            .iter()
-            .any(|ws| ws.has_working_pane(&self.state.terminals))
+        match self.state.agent_panel_scope {
+            crate::app::state::AgentPanelScope::CurrentWorkspace => self
+                .state
+                .active
+                .and_then(|idx| self.state.workspaces.get(idx))
+                .is_some_and(|ws| ws.has_working_pane(&self.state.terminals)),
+            crate::app::state::AgentPanelScope::AllWorkspaces => self
+                .state
+                .workspaces
+                .iter()
+                .any(|ws| ws.has_working_pane(&self.state.terminals)),
+        }
     }
 
     pub(crate) fn tick_selection_autoscroll(&mut self, now: Instant) {
@@ -446,7 +436,7 @@ impl App {
     }
 
     pub(crate) fn run_auto_update_check(&mut self) {
-        if !background_update_check_enabled(self.no_session, self.update_version_check_enabled) {
+        if !auto_updates_enabled(self.no_session) {
             self.next_auto_update_check = None;
             return;
         }
@@ -466,7 +456,7 @@ impl App {
     }
 
     pub(crate) fn run_agent_manifest_update_check(&mut self) {
-        if !background_update_check_enabled(self.no_session, self.update_manifest_check_enabled) {
+        if !auto_updates_enabled(self.no_session) {
             self.next_agent_manifest_update_check = None;
             return;
         }
@@ -571,6 +561,28 @@ impl App {
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// Forward events queued by TUI mutation paths
+    /// (split_pane, close_pane, switch_workspace, etc.) into the
+    /// shared API event hub so external subscribers — like cmux's
+    /// HerdrEventPump — see the same changes a TUI user just made.
+    /// Layout-tree events are sampled here because tree construction
+    /// needs `App` (not `AppState`) to walk the pane wire encoding.
+    pub(crate) fn drain_pending_state_events(&mut self) {
+        let direct: Vec<_> = std::mem::take(&mut self.state.pending_events);
+        for envelope in direct {
+            self.emit_event(envelope);
+        }
+        let layouts: Vec<_> = std::mem::take(&mut self.state.pending_layout_changes);
+        for (ws_idx, tab_idx) in layouts {
+            if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
+                self.emit_event(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::LayoutChanged,
+                    data: crate::api::schema::EventData::LayoutChanged { tree },
+                });
+            }
+        }
     }
 
     fn workspace_git_refresh_items(&self) -> Vec<WorkspaceGitRefreshItem> {
@@ -697,7 +709,6 @@ mod tests {
             rect: ratatui::layout::Rect::new(0, 0, 80, 24),
             inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
             scrollbar_rect: None,
-            borders: ratatui::widgets::Borders::NONE,
             is_focused: true,
         });
         (app, pane_id)
@@ -934,7 +945,6 @@ mod tests {
             rect: ratatui::layout::Rect::new(0, 0, cols, rows),
             inner_rect: ratatui::layout::Rect::new(0, 0, cols, rows),
             scrollbar_rect: None,
-            borders: ratatui::widgets::Borders::NONE,
             is_focused: true,
         });
         (app, pane_id)

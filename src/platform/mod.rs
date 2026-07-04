@@ -40,25 +40,6 @@ pub(crate) const fn capabilities() -> PlatformCapabilities {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn detach_server_daemon_command(command: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn current_process_is_detached_server_daemon() -> bool {
-    unsafe { libc::getsid(0) == libc::getpid() }
-}
-
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardCommand {
@@ -139,11 +120,6 @@ pub use windows::*;
 mod fallback;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub use fallback::*;
-
-#[cfg(not(target_os = "linux"))]
-pub fn process_agent_hint(_pid: u32) -> Option<crate::detect::Agent> {
-    None
-}
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]

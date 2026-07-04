@@ -162,10 +162,6 @@ pub const MODE_MOUSE_SGR_PIXELS: u16 = 1016;
 pub const MODE_BRACKETED_PASTE: u16 = 2004;
 pub const MODE_SYNCHRONIZED_OUTPUT: u16 = 2026;
 pub const MODE_GRAPHEME_CLUSTER: u16 = 2027;
-// These are documented in vendor/libghostty-vt/include/ghostty/vt/terminal.h,
-// but the generated bindings do not currently expose named constants for them.
-const TERMINAL_DATA_COLOR_FOREGROUND: ffi::GhosttyTerminalData = 18;
-const TERMINAL_DATA_COLOR_CURSOR: ffi::GhosttyTerminalData = 20;
 
 const KITTY_IMAGE_STORAGE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 const APC_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -317,6 +313,20 @@ pub struct CursorViewport {
     pub wide_tail: bool,
 }
 
+/// Trimmed-row snapshot used by `pane.screen_diff` and `pane.tui_probe`.
+/// `rows[i]` is the visible row at viewport y=i with trailing spaces
+/// stripped; combined with the cursor position + active-screen marker
+/// the daemon can answer "what changed since last call?" cheaply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleScreenSnapshot {
+    pub rows: Vec<String>,
+    pub row_count: u32,
+    pub column_count: u32,
+    pub active_screen: ActiveScreen,
+    pub cursor_row: Option<u32>,
+    pub cursor_col: Option<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RgbColor {
     pub r: u8,
@@ -353,7 +363,6 @@ pub struct CellStyle {
     pub invisible: bool,
     pub strikethrough: bool,
     pub overline: bool,
-    pub underline: u8,
     pub underlined: bool,
 }
 
@@ -371,16 +380,8 @@ impl From<ffi::GhosttyStyle> for CellStyle {
             invisible: value.invisible,
             strikethrough: value.strikethrough,
             overline: value.overline,
-            underline: normalize_underline_style(value.underline),
             underlined: value.underline != 0,
         }
-    }
-}
-
-fn normalize_underline_style(value: std::os::raw::c_int) -> u8 {
-    match value {
-        0..=5 => value as u8,
-        _ => 1,
     }
 }
 
@@ -614,7 +615,7 @@ impl Terminal {
     pub fn enable_kitty_graphics(&mut self) -> Result<(), Error> {
         install_png_decoder_once();
         let storage_limit = KITTY_IMAGE_STORAGE_LIMIT_BYTES;
-        let enable_medium = true;
+        let disable_medium = false;
         unsafe {
             ffi::ghostty_terminal_set(
                 self.raw,
@@ -625,19 +626,19 @@ impl Terminal {
             ffi::ghostty_terminal_set(
                 self.raw,
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
-                (&enable_medium as *const bool).cast(),
+                (&disable_medium as *const bool).cast(),
             )
             .into_result()?;
             ffi::ghostty_terminal_set(
                 self.raw,
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
-                (&enable_medium as *const bool).cast(),
+                (&disable_medium as *const bool).cast(),
             )
             .into_result()?;
             ffi::ghostty_terminal_set(
                 self.raw,
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
-                (&enable_medium as *const bool).cast(),
+                (&disable_medium as *const bool).cast(),
             )
             .into_result()?;
             ffi::ghostty_terminal_set(
@@ -710,7 +711,16 @@ impl Terminal {
     }
 
     pub fn mouse_tracking_enabled(&self) -> Result<bool, Error> {
-        self.get_bool(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING)
+        let mut out = false;
+        unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
+                (&mut out as *mut bool).cast(),
+            )
+            .into_result()?;
+        }
+        Ok(out)
     }
 
     pub fn active_screen(&self) -> Result<ActiveScreen, Error> {
@@ -755,11 +765,9 @@ impl Terminal {
         })
     }
 
-    pub fn screen_cell(&self, x: u16, y: u32) -> Result<(CellWide, Vec<u32>), Error> {
+    pub fn screen_graphemes(&self, x: u16, y: u32) -> Result<Vec<u32>, Error> {
         let grid_ref = self.grid_ref(ghostty_screen_point(x, y))?;
-        let wide = grid_ref_wide(&grid_ref)?;
-        let graphemes = grid_ref_graphemes(&grid_ref)?;
-        Ok((wide, graphemes))
+        grid_ref_graphemes(&grid_ref)
     }
 
     fn viewport_graphemes_and_style(&self, x: u16, y: u32) -> Result<(Vec<u32>, CellStyle), Error> {
@@ -1015,16 +1023,138 @@ impl Terminal {
         self.get_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)
     }
 
+    /// Snapshot of the currently-visible viewport as plain text. One row per
+    /// line, trailing whitespace stripped, no ANSI / styling. Used by the
+    /// `pane.screen_text` RPC so callers can reason about what the user
+    /// actually sees right now (vs. the full scrollback that `pane.read`
+    /// returns). Independent of cmux: built directly on libghostty-vt.
+    pub fn visible_screen_text(&self) -> Result<String, Error> {
+        let cols = self.cols()?;
+        let rows = self.rows()?;
+        Ok(self.collect_screen_text(0..u32::from(rows), cols))
+    }
+
+    /// Region-limited variant for `pane.screen_region`. `last_rows` /
+    /// `first_rows` clip the returned text so callers can fetch just
+    /// the prompt line (1-3 rows) instead of the full grid (~24 rows).
+    /// Cuts payload by ~80% in the common shell-prompt case.
+    pub fn visible_screen_region(
+        &self,
+        last_rows: Option<u32>,
+        first_rows: Option<u32>,
+    ) -> Result<String, Error> {
+        let cols = self.cols()?;
+        let rows = u32::from(self.rows()?);
+        let range = if let Some(n) = last_rows {
+            let n = n.min(rows);
+            (rows - n)..rows
+        } else if let Some(n) = first_rows {
+            0..n.min(rows)
+        } else {
+            0..rows
+        };
+        Ok(self.collect_screen_text(range, cols))
+    }
+
+    /// Visible viewport as a row-vector + the active screen
+    /// (primary/alternate) + dimensions. The row vector is the same
+    /// trimmed text used by `visible_screen_text`. Backs
+    /// `pane.screen_diff` and `pane.tui_probe`. The cursor position is
+    /// not included here because that lives on `RenderState`, not on
+    /// `Terminal`; callers (panes layer) attach the cursor separately.
+    pub fn visible_screen_snapshot(&self) -> Result<VisibleScreenSnapshot, Error> {
+        let cols = self.cols()?;
+        let rows = u32::from(self.rows()?);
+        let active_screen = self.active_screen()?;
+        let mut row_vec = Vec::with_capacity(rows as usize);
+        for y in 0..rows {
+            let mut row = String::new();
+            for x in 0..cols {
+                match self.viewport_graphemes_and_style(x, y) {
+                    Ok((graphemes, _)) => {
+                        for cp in graphemes {
+                            if let Some(ch) = char::from_u32(cp) {
+                                row.push(ch);
+                            }
+                        }
+                    }
+                    Err(_) => row.push(' '),
+                }
+            }
+            let trimmed = row.trim_end_matches(' ').to_string();
+            row_vec.push(trimmed);
+        }
+        Ok(VisibleScreenSnapshot {
+            rows: row_vec,
+            row_count: rows,
+            column_count: u32::from(cols),
+            active_screen,
+            cursor_row: None,
+            cursor_col: None,
+        })
+    }
+
+    /// SHA-256 of the trimmed visible viewport. Backs `pane.screen_hash`
+    /// so agents can poll for "did the screen change?" without paying
+    /// the ~2 KB price of a full `screen_text` fetch every tick.
+    /// Response stays ~80 bytes regardless of viewport size.
+    pub fn visible_screen_hash(&self) -> Result<(String, u16, u16), Error> {
+        use sha2::{Digest, Sha256};
+        let cols = self.cols()?;
+        let rows = self.rows()?;
+        let mut hasher = Sha256::new();
+        for y in 0..u32::from(rows) {
+            let mut row = String::new();
+            for x in 0..cols {
+                match self.viewport_graphemes_and_style(x, y) {
+                    Ok((graphemes, _)) => {
+                        for cp in graphemes {
+                            if let Some(ch) = char::from_u32(cp) {
+                                row.push(ch);
+                            }
+                        }
+                    }
+                    Err(_) => row.push(' '),
+                }
+            }
+            let trimmed = row.trim_end_matches(' ');
+            hasher.update(trimmed.as_bytes());
+            hasher.update([b'\n']);
+        }
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{:02x}", byte);
+        }
+        Ok((hex, rows, cols))
+    }
+
+    fn collect_screen_text(&self, range: std::ops::Range<u32>, cols: u16) -> String {
+        let mut out = String::new();
+        for y in range {
+            let mut row = String::new();
+            for x in 0..cols {
+                match self.viewport_graphemes_and_style(x, y) {
+                    Ok((graphemes, _)) => {
+                        for cp in graphemes {
+                            if let Some(ch) = char::from_u32(cp) {
+                                row.push(ch);
+                            }
+                        }
+                    }
+                    Err(_) => row.push(' '),
+                }
+            }
+            let trimmed = row.trim_end_matches(' ');
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+        out
+    }
+
     pub fn rows(&self) -> Result<u16, Error> {
         self.get_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)
-    }
-
-    pub fn effective_foreground_color(&self) -> Result<Option<RgbColor>, Error> {
-        self.get_optional_rgb_color(TERMINAL_DATA_COLOR_FOREGROUND)
-    }
-
-    pub fn effective_cursor_color(&self) -> Result<Option<RgbColor>, Error> {
-        self.get_optional_rgb_color(TERMINAL_DATA_COLOR_CURSOR)
     }
 
     fn width_px(&self) -> Result<u32, Error> {
@@ -1062,34 +1192,6 @@ impl Terminal {
                 .into_result()?;
         }
         Ok(out)
-    }
-
-    fn get_bool(&self, data: ffi::GhosttyTerminalData) -> Result<bool, Error> {
-        let mut out = false;
-        unsafe {
-            ffi::ghostty_terminal_get(self.raw, data, (&mut out as *mut bool).cast())
-                .into_result()?;
-        }
-        Ok(out)
-    }
-
-    fn get_optional_rgb_color(
-        &self,
-        data: ffi::GhosttyTerminalData,
-    ) -> Result<Option<RgbColor>, Error> {
-        let mut out = ffi::GhosttyColorRgb::default();
-        let result = unsafe {
-            ffi::ghostty_terminal_get(
-                self.raw,
-                data,
-                (&mut out as *mut ffi::GhosttyColorRgb).cast(),
-            )
-        };
-        match result {
-            ffi::GhosttyResult_GHOSTTY_SUCCESS => Ok(Some(out.into())),
-            ffi::GhosttyResult_GHOSTTY_NO_VALUE => Ok(None),
-            other => Err(Error(other)),
-        }
     }
 
     pub fn kitty_image_placements(&self) -> Result<Vec<KittyImagePlacement>, Error> {
@@ -1433,24 +1535,6 @@ fn grid_ref_graphemes(grid_ref: &ffi::GhosttyGridRef) -> Result<Vec<u32>, Error>
     }
     buffer.truncate(required);
     Ok(buffer)
-}
-
-fn grid_ref_wide(grid_ref: &ffi::GhosttyGridRef) -> Result<CellWide, Error> {
-    let mut raw = ffi::GhosttyCell::default();
-    unsafe {
-        ffi::ghostty_grid_ref_cell(grid_ref, &mut raw).into_result()?;
-    }
-
-    let mut wide = ffi::GhosttyCellWide_GHOSTTY_CELL_WIDE_NARROW;
-    unsafe {
-        ffi::ghostty_cell_get(
-            raw,
-            ffi::GhosttyCellData_GHOSTTY_CELL_DATA_WIDE,
-            (&mut wide as *mut ffi::GhosttyCellWide).cast(),
-        )
-        .into_result()?;
-    }
-    Ok(CellWide::from_raw(wide))
 }
 
 fn kitty_placement_u32(
@@ -2760,58 +2844,6 @@ mod tests {
         assert_eq!(placements[0].data, [255, 0, 0, 255]);
         assert_eq!(placements[0].render.grid_cols, 10);
         assert_eq!(placements[0].render.grid_rows, 5);
-    }
-
-    #[test]
-    fn kitty_graphics_local_media_are_enabled() {
-        let mut terminal = Terminal::new(10, 5, 0).unwrap();
-        terminal.enable_kitty_graphics().unwrap();
-
-        assert!(terminal
-            .get_bool(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_FILE)
-            .unwrap());
-        assert!(terminal
-            .get_bool(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_TEMP_FILE)
-            .unwrap());
-        assert!(terminal
-            .get_bool(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_SHARED_MEM)
-            .unwrap());
-    }
-
-    #[test]
-    fn kitty_graphics_file_medium_rgba_placement_is_queryable() {
-        use base64::Engine;
-
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-kitty-file-medium-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("pixel.rgba");
-        std::fs::write(&path, [255, 0, 0, 255]).unwrap();
-
-        let mut terminal = Terminal::new(10, 5, 0).unwrap();
-        terminal.enable_kitty_graphics().unwrap();
-        terminal.resize(10, 5, 8, 16).unwrap();
-        let encoded_path =
-            base64::engine::general_purpose::STANDARD.encode(path.as_os_str().as_encoded_bytes());
-        let command =
-            format!("\x1b_Ga=T,f=32,t=f,i=9,p=4,s=1,v=1,c=10,r=5,q=2;{encoded_path}\x1b\\");
-        terminal.write(command.as_bytes());
-        terminal.write(b"\x1b_Ga=p,U=1,i=9,c=10,r=5\x1b\\");
-
-        let placements = terminal.kitty_image_placements().unwrap();
-        assert_eq!(placements.len(), 1);
-        assert_eq!(placements[0].image_id, 9);
-        assert_eq!(placements[0].placement_id, 4);
-        assert_eq!(placements[0].image_width, 1);
-        assert_eq!(placements[0].image_height, 1);
-        assert_eq!(placements[0].format, KittyImageFormat::Rgba);
-        assert_eq!(placements[0].data, [255, 0, 0, 255]);
-        assert_eq!(placements[0].render.grid_cols, 10);
-        assert_eq!(placements[0].render.grid_rows, 5);
-
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::api::schema::{
     AgentReadParams, AgentRenameParams, AgentSendParams, AgentStartParams, AgentStatus,
     AgentTarget, EmptyParams, Method, ReadFormat, ReadSource, Request, Subscription,
@@ -269,12 +267,12 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
+        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
         return Ok(2);
     };
 
     let Some(separator) = args.iter().position(|arg| arg == "--") else {
-        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
+        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
         return Ok(2);
     };
     if separator == args.len() - 1 {
@@ -287,7 +285,6 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let mut tab_id = None;
     let mut split = None;
     let mut focus = false;
-    let mut env = HashMap::new();
 
     let mut index = 1;
     while index < separator {
@@ -332,21 +329,6 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 focus = false;
                 index += 1;
             }
-            "--env" => {
-                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
-                    eprintln!("missing value for --env");
-                    return Ok(2);
-                };
-                let (key, value) = match super::parse_env_assignment(value) {
-                    Ok(pair) => pair,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
-                env.insert(key, value);
-                index += 2;
-            }
             other => {
                 eprintln!("unknown option: {other}");
                 return Ok(2);
@@ -364,7 +346,6 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
             split,
             focus,
             argv: args[separator + 1..].to_vec(),
-            env,
         }),
     })?)
 }
@@ -502,17 +483,17 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
     let subscriptions = if agent_status == AgentStatus::Idle {
         vec![
             Subscription::PaneAgentStatusChanged {
-                pane_id: pane_id.to_owned(),
+                pane_id: Some(pane_id.to_owned()),
                 agent_status: Some(AgentStatus::Idle),
             },
             Subscription::PaneAgentStatusChanged {
-                pane_id: pane_id.to_owned(),
+                pane_id: Some(pane_id.to_owned()),
                 agent_status: Some(AgentStatus::Done),
             },
         ]
     } else {
         vec![Subscription::PaneAgentStatusChanged {
-            pane_id: pane_id.to_owned(),
+            pane_id: Some(pane_id.to_owned()),
             agent_status: Some(agent_status),
         }]
     };
@@ -675,7 +656,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
-    eprintln!("  herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
+    eprintln!("  herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
     eprintln!("  herdr agent explain <target> [--json]");
     eprintln!("  herdr agent explain --file PATH --agent LABEL [--json]");
     eprintln!("  targets accept terminal ids, unique agent names, detected/reported agent labels, and legacy pane ids");

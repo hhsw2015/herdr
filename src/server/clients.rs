@@ -9,7 +9,6 @@ use crate::server::render_stream::ClientRenderState;
 pub(crate) enum ClientConnectionMode {
     App,
     TerminalAttach { terminal_id: String },
-    TerminalObserve { terminal_id: String },
 }
 
 pub(crate) type RenderTarget = (
@@ -34,10 +33,6 @@ pub(crate) struct ClientConnection {
     pub(crate) cell_size: crate::kitty_graphics::HostCellSize,
     /// Last known host terminal default colors for this client.
     pub(crate) host_terminal_theme: crate::terminal_theme::TerminalTheme,
-    /// Last known host terminal appearance for this client.
-    pub(crate) host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-    /// True when appearance came from an explicit host color-scheme report.
-    pub(crate) host_terminal_appearance_explicit: bool,
     /// Last reported focus state for this client's outer terminal.
     pub(crate) outer_terminal_focus: Option<bool>,
     /// Stateful parser for app-client input split across transport reads.
@@ -103,10 +98,6 @@ impl ClientConnection {
             keybindings,
             terminal_size,
             cell_size,
-            host_terminal_appearance: host_terminal_theme
-                .background
-                .map(crate::terminal_theme::RgbColor::inferred_appearance),
-            host_terminal_appearance_explicit: false,
             host_terminal_theme,
             outer_terminal_focus,
             raw_input: crate::raw_input::RawInputFramer::default(),
@@ -139,47 +130,17 @@ impl ClientConnection {
         events: &[crate::raw_input::RawInputEvent],
     ) -> bool {
         let mut next_theme = self.host_terminal_theme;
-        let mut changed = false;
         for event in events {
-            match event {
-                crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } => {
-                    next_theme = next_theme.with_color(*kind, *color);
-                    if matches!(kind, crate::terminal_theme::DefaultColorKind::Background)
-                        && !self.host_terminal_appearance_explicit
-                    {
-                        changed |=
-                            self.set_host_appearance(Some(color.inferred_appearance()), false);
-                    }
-                }
-                crate::raw_input::RawInputEvent::HostColorSchemeChanged(appearance) => {
-                    changed |= self.set_host_appearance(Some(*appearance), true);
-                }
-                _ => {}
+            if let crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } = event {
+                next_theme = next_theme.with_color(*kind, *color);
             }
         }
 
-        if next_theme != self.host_terminal_theme {
-            self.host_terminal_theme = next_theme;
-            changed = true;
+        if next_theme == self.host_terminal_theme {
+            return false;
         }
-        changed
-    }
 
-    fn set_host_appearance(
-        &mut self,
-        appearance: Option<crate::terminal_theme::HostAppearance>,
-        explicit: bool,
-    ) -> bool {
-        if self.host_terminal_appearance_explicit && !explicit {
-            return false;
-        }
-        if self.host_terminal_appearance == appearance
-            && self.host_terminal_appearance_explicit == explicit
-        {
-            return false;
-        }
-        self.host_terminal_appearance = appearance;
-        self.host_terminal_appearance_explicit = explicit;
+        self.host_terminal_theme = next_theme;
         true
     }
 
@@ -221,7 +182,7 @@ pub(crate) fn latest_app_client(clients: &HashMap<u64, ClientConnection>) -> Opt
         .map(|(&client_id, _)| client_id)
 }
 
-pub(crate) fn terminal_stream_client_ids(
+pub(crate) fn terminal_attach_client_ids(
     clients: &HashMap<u64, ClientConnection>,
     terminal_id: &str,
 ) -> Vec<u64> {
@@ -229,9 +190,6 @@ pub(crate) fn terminal_stream_client_ids(
         .iter()
         .filter_map(|(&client_id, client)| match &client.mode {
             ClientConnectionMode::TerminalAttach {
-                terminal_id: attached,
-            }
-            | ClientConnectionMode::TerminalObserve {
                 terminal_id: attached,
             } if attached == terminal_id => Some(client_id),
             _ => None,
@@ -245,14 +203,14 @@ pub(crate) fn render_targets(
 ) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
+        // RawPty-encoded clients receive raw PTY bytes via a dedicated
+        // forwarder task (see spawn_raw_pty_forwarder); they do not
+        // participate in the frame render pipeline.
         .filter(|(_, client)| {
             client.writer.is_some()
+                && !client.render_state.is_raw_pty()
                 && (client.is_full_app_client()
-                    || matches!(
-                        client.mode,
-                        ClientConnectionMode::TerminalAttach { .. }
-                            | ClientConnectionMode::TerminalObserve { .. }
-                    ))
+                    || matches!(client.mode, ClientConnectionMode::TerminalAttach { .. }))
         })
         .map(|(&client_id, client)| {
             (
