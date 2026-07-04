@@ -68,6 +68,7 @@ pub fn start_server(
         event_hub,
         Some(ServerCapabilities {
             live_handoff: crate::platform::capabilities().live_handoff,
+            detached_server_daemon: false,
         }),
     )
 }
@@ -1067,7 +1068,7 @@ mod tests {
                 method: Method::Ping(crate::api::schema::PingParams::default()),
             },
             &tx,
-            Some(ServerCapabilities { live_handoff: true }),
+            Some(ServerCapabilities { live_handoff: true, detached_server_daemon: false }),
         );
 
         let parsed: SuccessResponse = serde_json::from_str(&response).unwrap();
