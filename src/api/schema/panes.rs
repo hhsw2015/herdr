@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use super::agents::AgentSessionInfo;
 use super::common::{AgentStatus, PaneAgentState, ReadFormat, ReadSource, SplitDirection};
+use super::events::OutputMatch;
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneSplitParams {
@@ -678,9 +683,8 @@ pub struct PaneExpectErrorDetail {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "verb", rename_all = "snake_case")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "verb", rename_all = "snake_case")]
 pub enum PaneExpectStep {
     Send {
         text: String,
@@ -734,9 +738,8 @@ pub struct PaneWaitForKindParams {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
 pub enum PaneWaitForKindTarget {
     Single(String),
     Many(Vec<String>),
