@@ -3,9 +3,13 @@ use std::time::{Duration, Instant};
 
 mod agents;
 mod cmux;
+mod env;
 mod integrations;
+mod layouts;
 mod panes;
+pub(crate) mod plugins;
 mod responses;
+mod session;
 mod tabs;
 mod workspaces;
 mod worktrees;
