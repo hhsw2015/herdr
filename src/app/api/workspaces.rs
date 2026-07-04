@@ -154,6 +154,7 @@ impl App {
             event: EventKind::WorkspaceClosed,
             data: EventData::WorkspaceClosed {
                 workspace_id: target.workspace_id,
+                workspace: None,
             },
         });
 

@@ -337,6 +337,7 @@ impl App {
                 event: EventKind::WorkspaceClosed,
                 data: EventData::WorkspaceClosed {
                     workspace_id: workspace_id.clone(),
+                    workspace: None,
                 },
             });
         }

@@ -348,7 +348,7 @@ mod known_event_name_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EventEnvelope {
     pub event: EventKind,
     pub data: EventData,
