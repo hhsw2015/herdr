@@ -764,3 +764,33 @@ pub struct LayoutSnapshotParams {
     pub workspace_id: String,
     pub tab_id: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutSplitDirection {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct LayoutTree {
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub root: CmuxLayoutNode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_pane_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CmuxLayoutNode {
+    Pane {
+        pane_id: String,
+    },
+    Split {
+        direction: LayoutSplitDirection,
+        ratio: f32,
+        first: Box<CmuxLayoutNode>,
+        second: Box<CmuxLayoutNode>,
+    },
+}

@@ -396,8 +396,8 @@ fn layout_node_to_wire(
     app: &App,
     ws_idx: usize,
     node: &crate::layout::Node,
-) -> Option<crate::api::schema::LayoutNode> {
-    use crate::api::schema::{LayoutNode, LayoutSplitDirection};
+) -> Option<crate::api::schema::CmuxLayoutNode> {
+    use crate::api::schema::{CmuxLayoutNode as LayoutNode, LayoutSplitDirection};
     match node {
         crate::layout::Node::Pane(pane_id) => Some(LayoutNode::Pane {
             pane_id: app.public_pane_id(ws_idx, *pane_id)?,
