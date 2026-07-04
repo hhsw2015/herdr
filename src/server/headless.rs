@@ -473,13 +473,6 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.internal_events");
             }
 
-            // 2b. Forward TUI-queued mutation events (split, rename, move_tab,
-            // switch_workspace, etc.) into the API event hub so external
-            // subscribers (cmux) see TUI-side changes. App::run does this
-            // between drain_internal_events and drain_api_requests; mirror
-            // that here so headless server mode behaves identically.
-            self.app.drain_pending_state_events();
-
             // 3. Drain API requests.
             if self.drain_api_requests_with_shutdown_check() {
                 needs_render = true;
@@ -2373,33 +2366,10 @@ impl HeadlessServer {
             .state
             .direct_attach_resize_locks
             .insert(real_terminal_id.clone());
-        let is_raw_pty = self
-            .clients
-            .get(&client_id)
-            .map(|c| c.render_state.is_raw_pty())
-            .unwrap_or(false);
-        let raw_pty_replay = if is_raw_pty {
-            self.app
-                .terminal_runtimes
-                .get(&real_terminal_id)
-                .map(|r| r.subscribe_raw_pty_with_replay())
-        } else {
-            None
-        };
         self.app
             .start_pending_agent_resume_for_terminal(&real_terminal_id, rows, cols, true);
         if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
             runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
-        }
-        if let Some((snapshot, rx)) = raw_pty_replay {
-            // tmux semantics: a fresh raw-pty client (cmux reattach
-            // after relaunch) sees the existing terminal state, not a
-            // blank pane. Flush the per-pane history ring as the first
-            // RawPtyChunk before live broadcast forwarding starts.
-            if !snapshot.is_empty() {
-                self.send_raw_pty_chunk(client_id, snapshot);
-            }
-            self.spawn_raw_pty_forwarder(client_id, rx);
         }
         true
     }
@@ -5071,250 +5041,37 @@ next_tab = ""
 
     fn app_client_marks_git_refresh_due_on_first_attach(render_encoding: RenderEncoding) {
         let mut server = test_headless_server();
-        let workspace = crate::workspace::Workspace::test_new("raw");
-        let pane_id = workspace.tabs[0].root_pane;
-        server.app.state.workspaces = vec![workspace];
-        server.app.state.ensure_test_terminals();
-        let real_terminal_id = server.app.state.workspaces[0]
-            .pane_state(pane_id)
-            .expect("pane")
-            .attached_terminal_id
-            .clone();
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
-        server.app.terminal_runtimes.insert(
-            real_terminal_id.clone(),
-            crate::terminal::TerminalRuntime::from_pane_runtime(runtime),
-        );
-        let terminal_id = real_terminal_id.to_string();
-
-        let (writer, control_rx, _render_rx) = test_client_writer();
-
-        // Client connects with RawPty encoding.
-        assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 11,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            render_encoding: RenderEncoding::RawPty,
-            keybindings: None,
-            direct_attach_requested: false,
-            writer,
-        }));
-        assert!(
-            server
-                .clients
-                .get(&11)
-                .expect("client")
-                .render_state
-                .is_raw_pty(),
-            "client should be marked RawPty"
-        );
-
-        // Attach to the pane's terminal. This should spawn the raw forwarder.
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: 11,
-                terminal_id: terminal_id.clone(),
-                takeover: false,
-            })
-        );
-        assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&11));
-
-        // Inject raw bytes including a CSI escape sequence.
-        let payload: bytes::Bytes = bytes::Bytes::from_static(b"\x1b[1;31mRED\x1b[0m\nplain\r\n");
-        let runtime = server
+        server
             .app
-            .terminal_runtimes
-            .get(&real_terminal_id)
-            .expect("runtime");
-        // Forwarder task subscribes lazily; yield once so it observes
-        // the injection. Retry a few times to cover the spawn handshake.
-        let mut subs = 0usize;
-        for _ in 0..50 {
-            subs = runtime.send_raw_pty_for_test(payload.clone());
-            if subs > 0 {
-                break;
-            }
-            tokio::task::yield_now().await;
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        assert!(subs >= 1, "forwarder should have subscribed to raw tap");
-
-        // Forwarder runs on a tokio task; give it a chance to push the
-        // serialized message to the control channel.
-        let mut received: Option<Vec<u8>> = None;
-        for _ in 0..50 {
-            if let Ok(bytes) = control_rx.try_recv() {
-                received = Some(bytes);
-                break;
-            }
-            tokio::task::yield_now().await;
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        let bytes = received.expect("client should receive a forwarded frame");
-        match read_server_message(bytes) {
-            ServerMessage::RawPtyChunk { bytes } => {
-                assert_eq!(
-                    bytes.as_slice(),
-                    payload.as_ref(),
-                    "raw bytes must be byte-for-byte identical (escape codes intact)"
-                );
-            }
-            other => panic!("expected RawPtyChunk, got {other:?}"),
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn raw_pty_input_reaches_pane_runtime() {
-        // Verifies RawPty-encoded clients send keystroke bytes to the
-        // attached pane via the same path TerminalAnsi clients use. If
-        // input flow ever diverges by encoding, this test catches it.
-        let mut server = test_headless_server();
-        let workspace = crate::workspace::Workspace::test_new("raw-input");
-        let pane_id = workspace.tabs[0].root_pane;
-        server.app.state.workspaces = vec![workspace];
-        server.app.state.ensure_test_terminals();
-        let real_terminal_id = server.app.state.workspaces[0]
-            .pane_state(pane_id)
-            .expect("pane")
-            .attached_terminal_id
-            .clone();
-        let (runtime, mut pty_input_rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
-        server.app.terminal_runtimes.insert(
-            real_terminal_id.clone(),
-            crate::terminal::TerminalRuntime::from_pane_runtime(runtime),
-        );
-        let terminal_id = real_terminal_id.to_string();
-
+            .state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("test"));
+        let future = Instant::now() + Duration::from_secs(60);
+        server.app.last_git_remote_status_refresh = future;
         let (writer, _control_rx, _render_rx) = test_client_writer();
+
         assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 21,
+            client_id: 7,
             cols: 80,
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
-            render_encoding: RenderEncoding::RawPty,
+            render_encoding,
             keybindings: None,
             direct_attach_requested: false,
             writer,
         }));
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: 21,
-                terminal_id: terminal_id.clone(),
-                takeover: false,
-            })
-        );
 
-        let payload = b"hello\r".to_vec();
-        assert!(server.handle_server_event(ServerEvent::ClientInput {
-            client_id: 21,
-            data: payload.clone(),
-        }));
-        let received = pty_input_rx
-            .try_recv()
-            .expect("PTY runtime should receive client input bytes");
-        assert_eq!(received.as_ref(), payload.as_slice());
+        assert!(server.has_app_client());
+        assert!(server
+            .app
+            .git_refresh_deadline()
+            .is_some_and(|deadline| deadline <= Instant::now()));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn raw_pty_resize_reaches_pane_runtime() {
-        // ClientResize for a RawPty-attached client should call
-        // runtime.resize() the same as for any other attach mode.
-        // We assert behavior via the public handle_server_event return
-        // value (true = handled and returned early in the attach branch).
-        let mut server = test_headless_server();
-        let workspace = crate::workspace::Workspace::test_new("raw-resize");
-        let pane_id = workspace.tabs[0].root_pane;
-        server.app.state.workspaces = vec![workspace];
-        server.app.state.ensure_test_terminals();
-        let real_terminal_id = server.app.state.workspaces[0]
-            .pane_state(pane_id)
-            .expect("pane")
-            .attached_terminal_id
-            .clone();
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
-        server.app.terminal_runtimes.insert(
-            real_terminal_id.clone(),
-            crate::terminal::TerminalRuntime::from_pane_runtime(runtime),
-        );
-        let terminal_id = real_terminal_id.to_string();
-
-        let (writer, _control_rx, _render_rx) = test_client_writer();
-        assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 31,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            render_encoding: RenderEncoding::RawPty,
-            keybindings: None,
-            direct_attach_requested: false,
-            writer,
-        }));
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: 31,
-                terminal_id: terminal_id.clone(),
-                takeover: false,
-            })
-        );
-
-        // Resize should be handled (return true via the attach branch
-        // before the shared runtime path).
-        let handled = server.handle_server_event(ServerEvent::ClientResize {
-            client_id: 31,
-            cols: 132,
-            rows: 50,
-            cell_width_px: 8,
-            cell_height_px: 16,
-        });
-        assert!(handled);
-        let client = server.clients.get(&31).expect("client");
-        assert_eq!(client.terminal_size, (132, 50));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn raw_pty_client_exits_when_attached_pane_dies() {
-        // Mirrors terminal_attach_client_exits_when_attached_pane_dies
-        // but for RawPty encoding. Ensures lifecycle cleanup is
-        // encoding-agnostic.
-        let mut server = test_headless_server();
-        let workspace = crate::workspace::Workspace::test_new("raw-die");
-        let pane_id = workspace.tabs[0].root_pane;
-        server.app.state.workspaces = vec![workspace];
-        server.app.state.ensure_test_terminals();
-        let terminal_id = server.app.state.workspaces[0]
-            .pane_state(pane_id)
-            .expect("pane")
-            .attached_terminal_id
-            .to_string();
-
-        let (writer, _control_rx, _render_rx) = test_client_writer();
-        assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 41,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            render_encoding: RenderEncoding::RawPty,
-            keybindings: None,
-            direct_attach_requested: false,
-            writer,
-        }));
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: 41,
-                terminal_id: terminal_id.clone(),
-                takeover: false,
-            })
-        );
-        assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&41));
-
-        assert!(server.handle_internal_event_with_forwarding(AppEvent::PaneDied { pane_id }));
-        assert!(!server.clients.contains_key(&41));
-        assert!(!server.terminal_attach_owners.contains_key(&terminal_id));
+    #[test]
+    fn terminal_ansi_app_client_enables_headless_git_refresh() {
+        app_client_marks_git_refresh_due_on_first_attach(RenderEncoding::TerminalAnsi);
     }
 
     #[test]
@@ -5384,41 +5141,6 @@ next_tab = ""
             ),
             None
         );
-    }
-
-    fn app_client_marks_git_refresh_due_on_first_attach(render_encoding: RenderEncoding) {
-        let mut server = test_headless_server();
-        server
-            .app
-            .state
-            .workspaces
-            .push(crate::workspace::Workspace::test_new("test"));
-        let future = Instant::now() + Duration::from_secs(60);
-        server.app.last_git_remote_status_refresh = future;
-        let (writer, _control_rx, _render_rx) = test_client_writer();
-
-        assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 7,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            render_encoding,
-            keybindings: None,
-            direct_attach_requested: false,
-            writer,
-        }));
-
-        assert!(server.has_app_client());
-        assert!(server
-            .app
-            .git_refresh_deadline()
-            .is_some_and(|deadline| deadline <= Instant::now()));
-    }
-
-    #[test]
-    fn terminal_ansi_app_client_enables_headless_git_refresh() {
-        app_client_marks_git_refresh_due_on_first_attach(RenderEncoding::TerminalAnsi);
     }
 
     #[test]

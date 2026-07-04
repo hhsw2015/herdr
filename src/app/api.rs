@@ -943,21 +943,6 @@ impl App {
             Method::PaneFocus(target) => return self.handle_pane_focus(request.id, target),
             Method::PaneRename(params) => return self.handle_pane_rename(request.id, params),
             Method::PaneRead(params) => return self.handle_pane_read(request.id, params),
-            Method::PaneScreenText(target) => {
-                return self.handle_pane_screen_text(request.id, target);
-            }
-            Method::PaneScreenHash(target) => {
-                return self.handle_pane_screen_hash(request.id, target);
-            }
-            Method::PaneScreenRegion(params) => {
-                return self.handle_pane_screen_region(request.id, params);
-            }
-            Method::PaneScreenDiff(params) => {
-                return self.handle_pane_screen_diff(request.id, params);
-            }
-            Method::PaneTuiProbe(target) => {
-                return self.handle_pane_tui_probe(request.id, target);
-            }
             Method::PaneReportAgent(params) => {
                 return self.handle_pane_report_agent(request.id, params);
             }

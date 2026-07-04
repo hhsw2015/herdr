@@ -245,12 +245,8 @@ pub(crate) fn render_targets(
 ) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
-        // RawPty-encoded clients receive raw PTY bytes via a dedicated
-        // forwarder task (see spawn_raw_pty_forwarder); they do not
-        // participate in the frame render pipeline.
         .filter(|(_, client)| {
             client.writer.is_some()
-                && !client.render_state.is_raw_pty()
                 && (client.is_full_app_client()
                     || matches!(
                         client.mode,

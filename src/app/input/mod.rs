@@ -528,7 +528,6 @@ impl AppState {
         // Actual PTY spawning happens in Workspace::split_focused
         // which needs events channel — this is called from navigate_key
         // where we don't have async context, so the workspace handles it
-        let active_idx = self.active;
         let (rows, cols) = self.estimate_pane_size();
         let new_rows = (rows / 2).max(4);
         let new_cols = (cols / 2).max(10);
@@ -568,20 +567,6 @@ impl AppState {
                 self.record_pane_focus_change(previous_focus, ws_idx, new_id);
                 self.mark_session_dirty();
                 self.mode = Mode::Terminal;
-                // Mirror the api.rs `pane.split` path: broadcast a
-                // LayoutChanged event so external subscribers (e.g.
-                // cmux's HerdrEventPump) see the new layout. Without
-                // this, TUI-driven splits left other API clients
-                // silently out of sync.
-                if let Some(ws_idx) = active_idx {
-                    let tab_idx = self
-                        .workspaces
-                        .get(ws_idx)
-                        .map(|ws_ref| ws_ref.active_tab_index());
-                    if let Some(tab_idx) = tab_idx {
-                        self.pending_layout_changes.push((ws_idx, tab_idx));
-                    }
-                }
             }
         }
     }

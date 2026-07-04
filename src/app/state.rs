@@ -1291,22 +1291,6 @@ pub struct AppState {
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
     pub request_reload_config: bool,
-    /// Events queued by TUI mutations (split_pane, close_pane,
-    /// switch_workspace, etc.) that the App tick later drains into
-    /// `event_hub`. Lets actions.rs / input dispatch broadcast
-    /// changes to API subscribers (cmux) without holding a reference
-    /// to the EventHub itself, which lives on App. Simple-payload
-    /// events go here; layout-tree events use `pending_layout_changes`
-    /// because tree construction needs App-level helpers.
-    pub pending_events: Vec<crate::api::schema::EventEnvelope>,
-    /// (ws_idx, tab_idx) pairs whose LayoutTree should be sampled and
-    /// broadcast on the next App tick.
-    pub pending_layout_changes: Vec<(usize, usize)>,
-    /// Per-pane row cache for `pane.screen_diff`. Bounded LRU; evicted
-    /// when count exceeds [`crate::app::SCREEN_DIFF_CACHE_LIMIT`].
-    pub(crate) screen_diff_cache:
-        std::collections::HashMap<(usize, PaneId), crate::app::ScreenDiffCacheEntry>,
-    pub(crate) screen_diff_cache_order: Vec<(usize, PaneId)>,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
     pub request_client_config_reload: bool,
@@ -1455,30 +1439,6 @@ impl AppState {
         self.session_dirty = true;
     }
 
-    /// Same shape as App's public_workspace_id but operates on the
-    /// raw state. TUI mutation paths need this when constructing
-    /// outbound event envelopes for the App tick to drain.
-    pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> String {
-        self.workspaces[ws_idx].id.clone()
-    }
-
-    pub(crate) fn public_pane_id(
-        &self,
-        ws_idx: usize,
-        pane_id: crate::layout::PaneId,
-    ) -> Option<String> {
-        let ws = self.workspaces.get(ws_idx)?;
-        let pane_number = ws.public_pane_number(pane_id)?;
-        Some(format!("{}-{pane_number}", ws.id))
-    }
-
-    /// Same shape as App's public_tab_id but operates on the raw state.
-    pub(crate) fn public_tab_id(&self, ws_idx: usize, tab_idx: usize) -> Option<String> {
-        let ws = self.workspaces.get(ws_idx)?;
-        ws.tabs.get(tab_idx)?;
-        Some(format!("{}:{}", ws.id, tab_idx + 1))
-    }
-
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
         self.pane_id_aliases.remove(&pane_id.raw());
     }
@@ -1558,25 +1518,10 @@ impl AppState {
     }
 
     pub fn estimate_pane_size(&self) -> (u16, u16) {
-        // Headless API clients (cmux, scripts) drive split/tab/create
-        // before any TUI client has rendered, so view.pane_infos can be
-        // populated with a zero-sized rect. libghostty-vt rejects 0x0
-        // with `ghostty error -2`, so clamp to a sane fallback that
-        // still lets the shell start; cmux's panel resize observer
-        // re-syncs the real geometry as soon as the panel mounts.
-        let (rows, cols) = self
-            .view
-            .pane_infos
-            .first()
-            .map(|info| (info.rect.height, info.rect.width))
-            .unwrap_or((24, 80));
-        // Either axis being 0 means there's a placeholder pane_info
-        // without real geometry yet — fall back to the same sane
-        // default we use for the truly empty case.
-        if rows == 0 || cols == 0 {
-            (24, 80)
+        if let Some(info) = self.view.pane_infos.first() {
+            (info.rect.height, info.rect.width)
         } else {
-            (rows, cols)
+            (24, 80)
         }
     }
 
@@ -1701,10 +1646,6 @@ impl AppState {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
-            pending_events: Vec::new(),
-            pending_layout_changes: Vec::new(),
-            screen_diff_cache: std::collections::HashMap::new(),
-            screen_diff_cache_order: Vec::new(),
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,

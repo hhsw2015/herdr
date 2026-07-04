@@ -573,28 +573,6 @@ impl App {
         .min()
     }
 
-    /// Forward events queued by TUI mutation paths
-    /// (split_pane, close_pane, switch_workspace, etc.) into the
-    /// shared API event hub so external subscribers — like cmux's
-    /// HerdrEventPump — see the same changes a TUI user just made.
-    /// Layout-tree events are sampled here because tree construction
-    /// needs `App` (not `AppState`) to walk the pane wire encoding.
-    pub(crate) fn drain_pending_state_events(&mut self) {
-        let direct: Vec<_> = std::mem::take(&mut self.state.pending_events);
-        for envelope in direct {
-            self.emit_event(envelope);
-        }
-        let layouts: Vec<_> = std::mem::take(&mut self.state.pending_layout_changes);
-        for (ws_idx, tab_idx) in layouts {
-            if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
-                self.emit_event(crate::api::schema::EventEnvelope {
-                    event: crate::api::schema::EventKind::LayoutChanged,
-                    data: crate::api::schema::EventData::LayoutChanged { tree },
-                });
-            }
-        }
-    }
-
     fn workspace_git_refresh_items(&self) -> Vec<WorkspaceGitRefreshItem> {
         self.state
             .workspaces

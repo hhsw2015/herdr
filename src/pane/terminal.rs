@@ -211,27 +211,6 @@ impl PaneTerminal {
         self.ghostty.visible_ansi()
     }
 
-    /// Snapshot the current visible viewport as a byte sequence
-    /// suitable for cmux's `raw-pty-attach` replay. Prefixes a full
-    /// terminal reset (RIS) + alt-screen exit + clear-screen so the
-    /// receiving emulator starts from a known state, then emits the
-    /// current visible viewport as ANSI bytes — a single instant
-    /// frame, not the historical byte stream that would otherwise
-    /// re-animate the user's last drags / typing on every reattach.
-    /// Currently only used by raw_pty_history-driven replay; kept
-    /// for future ANSI-stream attach modes.
-    #[allow(dead_code)]
-    pub fn snapshot_for_replay(&self) -> Vec<u8> {
-        let visible = self.ghostty.visible_ansi();
-        let mut out = Vec::with_capacity(visible.len() + 32);
-        // ESC [ ? 1049 l → leave alt screen if any
-        // ESC c          → full reset (RIS): clears screen, scrollback,
-        //                  attributes, cursor home
-        out.extend_from_slice(b"\x1b[?1049l\x1bc");
-        out.extend_from_slice(visible.as_bytes());
-        out
-    }
-
     pub fn detection_text(&self) -> String {
         self.ghostty.detection_text()
     }
@@ -258,33 +237,6 @@ impl PaneTerminal {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
         self.ghostty.render(frame, area, show_cursor);
-    }
-
-    /// Snapshot the visible viewport as plain text. One row per line,
-    /// trailing whitespace stripped. Backs the `pane.screen_text` RPC.
-    pub fn visible_screen_text(&self) -> Option<String> {
-        self.ghostty.visible_screen_text()
-    }
-
-    /// SHA-256 + dimensions of the visible viewport. Cheap "did the
-    /// screen change?" probe for `pane.screen_hash`.
-    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
-        self.ghostty.visible_screen_hash()
-    }
-
-    /// Region-limited screen read for `pane.screen_region`.
-    pub fn visible_screen_region(
-        &self,
-        last_rows: Option<u32>,
-        first_rows: Option<u32>,
-    ) -> Option<String> {
-        self.ghostty.visible_screen_region(last_rows, first_rows)
-    }
-
-    /// Row-vector + cursor + active-screen snapshot. Backs
-    /// `pane.screen_diff` and `pane.tui_probe`.
-    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
-        self.ghostty.visible_screen_snapshot()
     }
 
     pub fn collect_dirty_patch(
@@ -1235,50 +1187,6 @@ impl GhosttyPaneTerminal {
                     .ok()
             })
             .unwrap_or_default()
-    }
-
-    /// Snapshot of the visible viewport as plain text.
-    pub fn visible_screen_text(&self) -> Option<String> {
-        let core = self.core.lock().ok()?;
-        core.terminal.visible_screen_text().ok()
-    }
-
-    /// SHA-256 + dimensions of the visible viewport. Backs `pane.screen_hash`.
-    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
-        let core = self.core.lock().ok()?;
-        core.terminal.visible_screen_hash().ok()
-    }
-
-    /// Region-limited screen read for `pane.screen_region`.
-    pub fn visible_screen_region(
-        &self,
-        last_rows: Option<u32>,
-        first_rows: Option<u32>,
-    ) -> Option<String> {
-        let core = self.core.lock().ok()?;
-        core.terminal
-            .visible_screen_region(last_rows, first_rows)
-            .ok()
-    }
-
-    /// Row-vector + cursor + active-screen snapshot. Cursor is
-    /// pulled from `RenderState::cursor_viewport` (same path as
-    /// `cursor_state`) since it does not live on the `Terminal` directly.
-    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
-        let mut core = self.core.lock().ok()?;
-        let GhosttyPaneCore {
-            terminal,
-            render_state,
-            ..
-        } = &mut *core;
-        let mut snapshot = terminal.visible_screen_snapshot().ok()?;
-        if render_state.update(terminal).is_ok() {
-            if let Ok(Some(cursor)) = render_state.cursor_viewport() {
-                snapshot.cursor_col = Some(u32::from(cursor.x));
-                snapshot.cursor_row = Some(u32::from(cursor.y));
-            }
-        }
-        Some(snapshot)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {

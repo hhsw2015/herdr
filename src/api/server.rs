@@ -1,25 +1,20 @@
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
-use interprocess::TryClone as _;
 use tracing::{debug, error, info, warn};
 
 #[cfg(all(test, unix))]
 use std::fs;
 
-use crate::api::expect::handle_expect;
 use crate::api::schema::{
     ErrorBody, ErrorResponse, Method, Request, ResponseResult, ServerCapabilities, SuccessResponse,
 };
 use crate::api::subscriptions::ActiveSubscription;
-use crate::api::wait::{
-    wait_for_cursor, wait_for_idle, wait_for_kind, wait_for_output, wait_for_screen_change,
-    wait_for_text,
-};
+use crate::api::wait::wait_for_output;
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
     bind_local_listener, remove_socket_file_if_owned, socket_file_identity, LocalStream,
@@ -31,7 +26,6 @@ pub(super) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100)
 pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-#[allow(dead_code)]
 const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
 
 pub struct ServerHandle {
@@ -145,434 +139,112 @@ fn handle_connection(
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
 ) -> std::io::Result<()> {
-    // Connection now handles MULTIPLE non-streaming requests in a
-    // loop. Streaming methods (`events.subscribe`,
-    // `pane.wait_for_output`) still consume the connection and
-    // return — those return paths exit the loop.
-    //
-    // Backward compatibility: legacy single-shot clients (e.g.
-    // pre-cmux9 herdr-cmux api-bridge invocations) close the socket
-    // after one request, so the next read_line returns 0 and the
-    // loop terminates gracefully. Persistent clients (cmux's new
-    // long-lived api-bridge) reuse the same socket for many RPCs,
-    // eliminating ~700ms of ssh+bincode handshake per call.
-    if let Err(err) = stream.set_recv_timeout(Some(INITIAL_REQUEST_TIMEOUT)) {
-        debug!(err = %err, "api connection recv timeout unavailable");
-    }
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(err = %err, "api connection write timeout unavailable");
     }
 
-    let reader_stream = stream.try_clone()?;
-    let mut reader = BufReader::new(reader_stream);
-    let mut first_request = true;
+    let Some(line) = read_initial_request_line(&mut stream)? else {
+        return Ok(());
+    };
 
-    loop {
-        let mut line = String::new();
-        let read_result = reader.read_line(&mut line);
-        let read = match read_result {
-            Ok(n) => n,
-            Err(err) => {
-                if first_request {
-                    return Err(err);
-                }
-                if is_connection_closed_error(&err)
-                    || err.kind() == std::io::ErrorKind::UnexpectedEof
-                {
-                    return Ok(());
-                }
-                return Err(err);
-            }
-        };
-        if read == 0 {
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    let request = match serde_json::from_str::<Request>(line) {
+        Ok(request) => request,
+        Err(err) => {
+            write_json_line_allow_disconnect(
+                &mut stream,
+                &ErrorResponse {
+                    id: String::new(),
+                    error: ErrorBody {
+                        code: "invalid_request".into(),
+                        message: format!("invalid request: {err}"),
+                    },
+                },
+            )?;
             return Ok(());
         }
+    };
 
-        if first_request {
-            // Subsequent requests on a persistent connection don't
-            // need the initial-request 5s gate.
-            let _ = stream.set_recv_timeout(None);
-            first_request = false;
+    let request_id = request.id.clone();
+    let method = api_method_name(&request.method);
+    let changes_ui = request_changes_ui(&request);
+    crate::logging::api_request_started(&request_id, method, changes_ui);
+
+    match request.method {
+        Method::EventsSubscribe(params) => {
+            let result = stream_subscriptions(
+                stream,
+                request_id.clone(),
+                params,
+                api_tx,
+                event_hub,
+                running,
+            );
+            match &result {
+                Ok(()) => crate::logging::api_request_completed(
+                    &request_id,
+                    method,
+                    "stream_closed",
+                    changes_ui,
+                ),
+                Err(err) => {
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                }
+            }
+            result
         }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request = match serde_json::from_str::<Request>(trimmed) {
-            Ok(request) => request,
-            Err(err) => {
-                if let Err(write_err) = write_json_line_allow_disconnect(
-                    &mut stream,
-                    &ErrorResponse {
-                        id: String::new(),
-                        error: ErrorBody {
-                            code: "invalid_request".into(),
-                            message: format!("invalid request: {err}"),
-                        },
-                    },
-                ) {
-                    if is_connection_closed_error(&write_err) {
-                        return Ok(());
-                    }
-                    return Err(write_err);
-                }
-                continue;
-            }
-        };
-
-        let request_id = request.id.clone();
-        let method = api_method_name(&request.method);
-        let changes_ui = request_changes_ui(&request);
-        crate::logging::api_request_started(&request_id, method, changes_ui);
-
-        match request.method {
-            Method::EventsSubscribe(params) => {
-                let result = stream_subscriptions(
-                    stream,
-                    request_id.clone(),
-                    params,
-                    api_tx,
-                    event_hub,
-                    running,
-                );
-                match &result {
-                    Ok(()) => crate::logging::api_request_completed(
-                        &request_id,
-                        method,
-                        "stream_closed",
-                        changes_ui,
-                    ),
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string())
-                    }
-                }
-                return result;
-            }
-            Method::PaneExpect(params) => {
-                let expect_result =
-                    handle_expect(request_id.clone(), params, &mut stream, api_tx, running);
-                let Some(response) = (match expect_result {
-                    Ok(value) => value,
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        let envelope = ErrorResponse {
-                            id: request_id.clone(),
-                            error: ErrorBody {
-                                code: "expect_failed".into(),
-                                message: err.to_string(),
-                            },
-                        };
-                        if let Err(write_err) =
-                            write_json_line_allow_disconnect(&mut stream, &envelope)
-                        {
-                            if is_connection_closed_error(&write_err) {
-                                return Ok(());
-                            }
-                            return Err(write_err);
-                        }
-                        continue;
-                    }
-                }) else {
-                    return Ok(());
-                };
-                let response_outcome = api_response_outcome(&response);
-                if let Err(write_err) = write_json_line(&mut stream, &response) {
-                    if is_connection_closed_error(&write_err) {
-                        return Ok(());
-                    }
-                    return Err(write_err);
-                }
-                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
-                continue;
-            }
-            Method::PaneWaitForText(params) => {
-                let wait_result =
-                    wait_for_text(request_id.clone(), params, &mut stream, api_tx, running);
-                let Some(response) = (match wait_result {
-                    Ok(value) => value,
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        let envelope = ErrorResponse {
-                            id: request_id.clone(),
-                            error: ErrorBody {
-                                code: "wait_for_text_failed".into(),
-                                message: err.to_string(),
-                            },
-                        };
-                        if let Err(write_err) =
-                            write_json_line_allow_disconnect(&mut stream, &envelope)
-                        {
-                            if is_connection_closed_error(&write_err) {
-                                return Ok(());
-                            }
-                            return Err(write_err);
-                        }
-                        continue;
-                    }
-                }) else {
-                    return Ok(());
-                };
-                let response_outcome = api_response_outcome(&response);
-                if let Err(write_err) = write_json_line(&mut stream, &response) {
-                    if is_connection_closed_error(&write_err) {
-                        return Ok(());
-                    }
-                    return Err(write_err);
-                }
-                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
-                continue;
-            }
-            Method::PaneWaitForKind(params) => {
-                let wait_result =
-                    wait_for_kind(request_id.clone(), params, &mut stream, api_tx, running);
-                let Some(response) = (match wait_result {
-                    Ok(value) => value,
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        let envelope = ErrorResponse {
-                            id: request_id.clone(),
-                            error: ErrorBody {
-                                code: "wait_for_kind_failed".into(),
-                                message: err.to_string(),
-                            },
-                        };
-                        if let Err(write_err) =
-                            write_json_line_allow_disconnect(&mut stream, &envelope)
-                        {
-                            if is_connection_closed_error(&write_err) {
-                                return Ok(());
-                            }
-                            return Err(write_err);
-                        }
-                        continue;
-                    }
-                }) else {
-                    return Ok(());
-                };
-                let response_outcome = api_response_outcome(&response);
-                if let Err(write_err) = write_json_line(&mut stream, &response) {
-                    if is_connection_closed_error(&write_err) {
-                        return Ok(());
-                    }
-                    return Err(write_err);
-                }
-                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
-                continue;
-            }
-            Method::PaneWaitForCursor(params) => {
-                let wait_result =
-                    wait_for_cursor(request_id.clone(), params, &mut stream, api_tx, running);
-                let Some(response) = (match wait_result {
-                    Ok(value) => value,
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        let envelope = ErrorResponse {
-                            id: request_id.clone(),
-                            error: ErrorBody {
-                                code: "wait_for_cursor_failed".into(),
-                                message: err.to_string(),
-                            },
-                        };
-                        if let Err(write_err) =
-                            write_json_line_allow_disconnect(&mut stream, &envelope)
-                        {
-                            if is_connection_closed_error(&write_err) {
-                                return Ok(());
-                            }
-                            return Err(write_err);
-                        }
-                        continue;
-                    }
-                }) else {
-                    return Ok(());
-                };
-                let response_outcome = api_response_outcome(&response);
-                if let Err(write_err) = write_json_line(&mut stream, &response) {
-                    if is_connection_closed_error(&write_err) {
-                        return Ok(());
-                    }
-                    return Err(write_err);
-                }
-                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
-                continue;
-            }
-            Method::PaneWaitForScreenChange(params) => {
-                let wait_result = wait_for_screen_change(
-                    request_id.clone(),
-                    params,
-                    &mut stream,
-                    api_tx,
-                    running,
-                );
-                let Some(response) = (match wait_result {
-                    Ok(value) => value,
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        let envelope = ErrorResponse {
-                            id: request_id.clone(),
-                            error: ErrorBody {
-                                code: "wait_for_screen_change_failed".into(),
-                                message: err.to_string(),
-                            },
-                        };
-                        if let Err(write_err) =
-                            write_json_line_allow_disconnect(&mut stream, &envelope)
-                        {
-                            if is_connection_closed_error(&write_err) {
-                                return Ok(());
-                            }
-                            return Err(write_err);
-                        }
-                        continue;
-                    }
-                }) else {
-                    return Ok(());
-                };
-                let response_outcome = api_response_outcome(&response);
-                if let Err(write_err) = write_json_line(&mut stream, &response) {
-                    if is_connection_closed_error(&write_err) {
-                        return Ok(());
-                    }
-                    return Err(write_err);
-                }
-                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
-                continue;
-            }
-            Method::PaneWaitForIdle(params) => {
-                let wait_result =
-                    wait_for_idle(request_id.clone(), params, &mut stream, api_tx, running);
-                let Some(response) = (match wait_result {
-                    Ok(value) => value,
-                    Err(err) => {
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        let envelope = ErrorResponse {
-                            id: request_id.clone(),
-                            error: ErrorBody {
-                                code: "wait_for_idle_failed".into(),
-                                message: err.to_string(),
-                            },
-                        };
-                        if let Err(write_err) =
-                            write_json_line_allow_disconnect(&mut stream, &envelope)
-                        {
-                            if is_connection_closed_error(&write_err) {
-                                return Ok(());
-                            }
-                            return Err(write_err);
-                        }
-                        continue;
-                    }
-                }) else {
-                    return Ok(());
-                };
-                let response_outcome = api_response_outcome(&response);
-                if let Err(write_err) = write_json_line(&mut stream, &response) {
-                    if is_connection_closed_error(&write_err) {
-                        return Ok(());
-                    }
-                    return Err(write_err);
-                }
-                crate::logging::api_request_completed(&request_id, method, response_outcome, false);
-                continue;
-            }
-            Method::PaneWaitForOutput(params) => {
-                let wait_result =
-                    wait_for_output(request_id.clone(), params, &mut stream, api_tx, running);
-                let Some(response) = (match wait_result {
-                    Ok(value) => value,
-                    Err(err) => {
-                        // Persistent connections must not die on a
-                        // single failed request. Convert IO/api error
-                        // into a JSON-RPC error envelope, log
-                        // api_request_failed, write the envelope, and
-                        // continue the outer loop so the next request
-                        // on this socket can still land. Only a write
-                        // failure (peer gone) below tears down the
-                        // connection. Replaces the prior hard
-                        // tear-down that came in via cmux #247
-                        // review HIGH-7 — see review MED-6 of
-                        // cmux 7bf29063.
-                        crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                        let envelope = ErrorResponse {
-                            id: request_id.clone(),
-                            error: ErrorBody {
-                                code: "wait_for_output_failed".into(),
-                                message: err.to_string(),
-                            },
-                        };
-                        if let Err(write_err) =
-                            write_json_line_allow_disconnect(&mut stream, &envelope)
-                        {
-                            if is_connection_closed_error(&write_err) {
-                                return Ok(());
-                            }
-                            return Err(write_err);
-                        }
-                        continue;
-                    }
-                }) else {
-                    crate::logging::api_request_completed(
-                        &request_id,
-                        method,
-                        "client_disconnected",
-                        changes_ui,
-                    );
-                    return Ok(());
-                };
-                if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response) {
-                    if is_connection_closed_error(&err) {
-                        crate::logging::api_request_completed(
-                            &request_id,
-                            method,
-                            "client_disconnected",
-                            changes_ui,
-                        );
-                        return Ok(());
-                    }
-                    crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                    return Err(err);
-                }
+        Method::PaneWaitForOutput(params) => {
+            let Some(response) =
+                wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?
+            else {
                 crate::logging::api_request_completed(
+                    &request_id,
+                    method,
+                    "client_disconnected",
+                    changes_ui,
+                );
+                return Ok(());
+            };
+            let result = write_text_line_allow_disconnect(&mut stream, &response);
+            match &result {
+                Ok(()) => crate::logging::api_request_completed(
                     &request_id,
                     method,
                     api_response_outcome(&response),
                     changes_ui,
-                );
-                // Continue loop — same pattern as method_body branch.
-            }
-            method_body => {
-                let response = handle_request(
-                    Request {
-                        id: request_id.clone(),
-                        method: method_body,
-                    },
-                    api_tx,
-                    capabilities.clone(),
-                );
-                if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response) {
-                    if is_connection_closed_error(&err) {
-                        crate::logging::api_request_completed(
-                            &request_id,
-                            method,
-                            "client_disconnected",
-                            changes_ui,
-                        );
-                        return Ok(());
-                    }
-                    crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                    return Err(err);
+                ),
+                Err(err) => {
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
                 }
-                crate::logging::api_request_completed(
+            }
+            result
+        }
+        method_body => {
+            let response = handle_request(
+                Request {
+                    id: request_id.clone(),
+                    method: method_body,
+                },
+                api_tx,
+                capabilities,
+            );
+            let result = write_text_line_allow_disconnect(&mut stream, &response);
+            match &result {
+                Ok(()) => crate::logging::api_request_completed(
                     &request_id,
                     method,
                     api_response_outcome(&response),
                     changes_ui,
-                );
-                // Continue loop to read next request on the same
-                // connection.
+                ),
+                Err(err) => {
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                }
             }
+            result
         }
     }
 }
@@ -659,15 +331,6 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneSendKeys(_) => "pane.send_keys",
         Method::PaneSendInput(_) => "pane.send_input",
         Method::PaneRead(_) => "pane.read",
-        Method::PaneScreenText(_) => "pane.screen_text",
-        Method::PaneScreenHash(_) => "pane.screen_hash",
-        Method::PaneScreenRegion(_) => "pane.screen_region",
-        Method::PaneScreenDiff(_) => "pane.screen_diff",
-        Method::PaneTuiProbe(_) => "pane.tui_probe",
-        Method::PaneExpect(_) => "pane.expect",
-        Method::PaneWaitForKind(_) => "pane.wait_for_kind",
-        Method::PaneWaitForCursor(_) => "pane.wait_for_cursor",
-        Method::PaneWaitForScreenChange(_) => "pane.wait_for_screen_change",
         Method::PaneReportAgent(_) => "pane.report_agent",
         Method::PaneReportAgentSession(_) => "pane.report_agent_session",
         Method::PaneReportMetadata(_) => "pane.report_metadata",
@@ -677,8 +340,6 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::EventsSubscribe(_) => "events.subscribe",
         Method::EventsWait(_) => "events.wait",
         Method::PaneWaitForOutput(_) => "pane.wait_for_output",
-        Method::PaneWaitForText(_) => "pane.wait_for_text",
-        Method::PaneWaitForIdle(_) => "pane.wait_for_idle",
         Method::IntegrationInstall(_) => "integration.install",
         Method::IntegrationUninstall(_) => "integration.uninstall",
         Method::PluginLink(_) => "plugin.link",
@@ -726,7 +387,6 @@ fn api_response_outcome(response: &str) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option<String>> {
     stream.set_nonblocking(true)?;
     let deadline = Instant::now() + INITIAL_REQUEST_TIMEOUT;

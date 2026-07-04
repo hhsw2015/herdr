@@ -15,9 +15,6 @@ pub(crate) enum ClientRenderState {
     Semantic { last_frame: Option<FrameData> },
     /// Terminal-ANSI clients keep a terminal diff encoder and sequence number.
     TerminalAnsi { blit_encoder: BlitEncoder, seq: u64 },
-    /// RawPty clients receive raw PTY bytes via a forwarder task and never
-    /// participate in frame rendering. This variant is a marker only.
-    RawPty,
 }
 
 impl ClientRenderState {
@@ -28,19 +25,13 @@ impl ClientRenderState {
                 blit_encoder: BlitEncoder::new(),
                 seq: 0,
             },
-            RenderEncoding::RawPty => Self::RawPty,
         }
-    }
-
-    pub(crate) fn is_raw_pty(&self) -> bool {
-        matches!(self, Self::RawPty)
     }
 
     pub(crate) fn reset_baseline(&mut self) {
         match self {
             Self::Semantic { last_frame } => *last_frame = None,
             Self::TerminalAnsi { blit_encoder, .. } => *blit_encoder = BlitEncoder::new(),
-            Self::RawPty => {}
         }
     }
 
@@ -92,7 +83,6 @@ impl ClientRenderState {
                     encoded: Some(encoded),
                 })
             }
-            Self::RawPty => None,
         }
     }
 
@@ -100,7 +90,6 @@ impl ClientRenderState {
         match self {
             Self::Semantic { last_frame } => last_frame.as_ref(),
             Self::TerminalAnsi { blit_encoder, .. } => blit_encoder.last_frame(),
-            Self::RawPty => None,
         }
     }
 
@@ -132,7 +121,6 @@ impl ClientRenderState {
         match self {
             Self::Semantic { .. } => None,
             Self::TerminalAnsi { seq, .. } => Some(*seq),
-            Self::RawPty => None,
         }
     }
 }

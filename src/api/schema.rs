@@ -159,28 +159,6 @@ pub enum Method {
     PaneSendInput(PaneSendInputParams),
     #[serde(rename = "pane.read")]
     PaneRead(PaneReadParams),
-    #[serde(rename = "pane.screen_text")]
-    PaneScreenText(PaneTarget),
-    #[serde(rename = "pane.screen_hash")]
-    PaneScreenHash(PaneTarget),
-    #[serde(rename = "pane.screen_region")]
-    PaneScreenRegion(PaneScreenRegionParams),
-    #[serde(rename = "pane.screen_diff")]
-    PaneScreenDiff(PaneScreenDiffParams),
-    #[serde(rename = "pane.tui_probe")]
-    PaneTuiProbe(PaneTarget),
-    #[serde(rename = "pane.expect")]
-    PaneExpect(PaneExpectParams),
-    #[serde(rename = "pane.wait_for_text")]
-    PaneWaitForText(PaneWaitForTextParams),
-    #[serde(rename = "pane.wait_for_idle")]
-    PaneWaitForIdle(PaneWaitForIdleParams),
-    #[serde(rename = "pane.wait_for_kind")]
-    PaneWaitForKind(PaneWaitForKindParams),
-    #[serde(rename = "pane.wait_for_cursor")]
-    PaneWaitForCursor(PaneWaitForCursorParams),
-    #[serde(rename = "pane.wait_for_screen_change")]
-    PaneWaitForScreenChange(PaneWaitForScreenChangeParams),
     #[serde(rename = "pane.report_agent")]
     PaneReportAgent(PaneReportAgentParams),
     #[serde(rename = "pane.report_agent_session")]
@@ -193,18 +171,6 @@ pub enum Method {
     PaneReleaseAgent(PaneReleaseAgentParams),
     #[serde(rename = "pane.close")]
     PaneClose(PaneTarget),
-    #[serde(rename = "pane.cmux_resize")]
-    PaneCmuxResize(PaneCmuxResizeParams),
-    #[serde(rename = "layout.snapshot")]
-    LayoutSnapshot(LayoutSnapshotParams),
-    #[serde(rename = "pane.set_split_ratio")]
-    PaneSetSplitRatio(PaneSetSplitRatioParams),
-    #[serde(rename = "pane.cmux_swap")]
-    PaneCmuxSwap(PaneCmuxSwapParams),
-    #[serde(rename = "pane.set_zoom")]
-    PaneSetZoom(PaneSetZoomParams),
-    #[serde(rename = "tab.reorder")]
-    TabReorder(TabReorderParams),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(EventsSubscribeParams),
     #[serde(rename = "events.wait")]
@@ -237,6 +203,39 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
+    // ========================================================
+    // cmux fork additions (P68 port)
+    // ========================================================
+    #[serde(rename = "pane.screen_text")]
+    PaneScreenText(PaneTarget),
+    #[serde(rename = "pane.screen_hash")]
+    PaneScreenHash(PaneTarget),
+    #[serde(rename = "pane.screen_region")]
+    PaneScreenRegion(PaneScreenRegionParams),
+    #[serde(rename = "pane.screen_diff")]
+    PaneScreenDiff(PaneScreenDiffParams),
+    #[serde(rename = "pane.tui_probe")]
+    PaneTuiProbe(PaneTarget),
+    #[serde(rename = "pane.expect")]
+    PaneExpect(PaneExpectParams),
+    #[serde(rename = "pane.wait_for_text")]
+    PaneWaitForText(PaneWaitForTextParams),
+    #[serde(rename = "pane.wait_for_idle")]
+    PaneWaitForIdle(PaneWaitForIdleParams),
+    #[serde(rename = "pane.wait_for_kind")]
+    PaneWaitForKind(PaneWaitForKindParams),
+    #[serde(rename = "pane.wait_for_cursor")]
+    PaneWaitForCursor(PaneWaitForCursorParams),
+    #[serde(rename = "pane.wait_for_screen_change")]
+    PaneWaitForScreenChange(PaneWaitForScreenChangeParams),
+    #[serde(rename = "pane.set_zoom")]
+    PaneSetZoom(PaneSetZoomParams),
+    #[serde(rename = "pane.set_split_ratio")]
+    PaneSetSplitRatio(PaneSetSplitRatioParams),
+    #[serde(rename = "pane.cmux_swap")]
+    PaneCmuxSwap(PaneCmuxSwapParams),
+    #[serde(rename = "pane.cmux_resize")]
+    PaneCmuxResize(PaneCmuxResizeParams),
 }
 
 #[cfg(test)]

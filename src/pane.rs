@@ -13,7 +13,7 @@ use portable_pty::{native_pty_system, PtySize};
 use ratatui::{layout::Rect, Frame};
 #[cfg(test)]
 use tokio::sync::watch;
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{mpsc, Notify};
 #[cfg(not(windows))]
 use tracing::debug;
 use tracing::{error, info, warn};
@@ -49,56 +49,6 @@ pub use self::{
 const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration = std::time::Duration::from_secs(1);
 const PANE_TERM: &str = "xterm-256color";
 const PANE_COLORTERM: &str = "truecolor";
-
-/// Default capacity for the raw PTY replay buffer kept per pane.
-/// 256 KiB covers a few screens of dense output (e.g. `cargo build`,
-/// `ls -laR`) which is enough for cmux reattach to land the user
-/// where they were without bloating per-pane memory or churning the
-/// allocator on every read.
-pub(crate) const RAW_PTY_HISTORY_DEFAULT_CAP: usize = 256 * 1024;
-
-/// Bounded byte ring buffering recent raw PTY output. Append is
-/// O(n) amortised in the chunk size; snapshot is one allocation +
-/// memcpy. The implementation chooses a contiguous Vec<u8> that
-/// drains from the front when full, since attach is far less
-/// frequent than reads and the constant factor matters for tput.
-pub(crate) struct RawPtyHistory {
-    buf: Vec<u8>,
-    cap: usize,
-}
-
-impl RawPtyHistory {
-    pub(crate) fn new(cap: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(cap.min(64 * 1024)),
-            cap,
-        }
-    }
-
-    pub(crate) fn append(&mut self, chunk: &[u8]) {
-        if chunk.len() >= self.cap {
-            // The chunk alone overflows the ring; keep the tail.
-            let start = chunk.len() - self.cap;
-            self.buf.clear();
-            self.buf.extend_from_slice(&chunk[start..]);
-            return;
-        }
-        let combined = self.buf.len() + chunk.len();
-        if combined > self.cap {
-            let drop = combined - self.cap;
-            self.buf.drain(..drop);
-        }
-        self.buf.extend_from_slice(chunk);
-    }
-
-    pub(crate) fn snapshot(&self) -> Bytes {
-        if self.buf.is_empty() {
-            Bytes::new()
-        } else {
-            Bytes::copy_from_slice(&self.buf)
-        }
-    }
-}
 
 fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     // Each pane is rendered by herdr's own terminal layer, not the outer terminal
@@ -962,19 +912,6 @@ pub struct PaneRuntime {
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
-    /// Broadcasts raw PTY-master byte chunks to subscribed RawPty clients.
-    /// Created lazily but kept alive for the runtime's lifetime so subscribers
-    /// added after spawn() see future bytes. Capacity bounded — slow consumers
-    /// see broadcast::error::RecvError::Lagged and resync.
-    raw_pty_tx: broadcast::Sender<Bytes>,
-    /// Tail of recent raw PTY bytes kept for replay when a new RawPty
-    /// client (e.g. cmux raw-pty-attach) connects after PTY output
-    /// has already been emitted. tmux semantics: reattaching shows
-    /// the existing terminal state, not a blank pane. The reader
-    /// appends here under the same lock used to capture snapshots,
-    /// so a subscribe-with-replay call sees a contiguous prefix +
-    /// future broadcast deliveries with no gap.
-    raw_pty_history: Arc<Mutex<RawPtyHistory>>,
     preserve_processes_on_drop: bool,
     // Task handles for deterministic shutdown
     detect_handle: tokio::task::AbortHandle,
@@ -1849,8 +1786,6 @@ impl PaneRuntime {
             full_lifecycle_authority_active,
             detect_reset_notify,
             pending_release,
-            raw_pty_tx: tokio::sync::broadcast::channel::<bytes::Bytes>(16).0,
-            raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
             preserve_processes_on_drop: true,
             detect_handle,
         })
@@ -1869,12 +1804,6 @@ impl PaneRuntime {
         spawn_error_message: &'static str,
         initial_state: SpawnInitialState<'_>,
     ) -> std::io::Result<Self> {
-        // --- Raw PTY broadcast tap (for RawPty-encoded clients that bypass
-        // the internal emulator). Capacity 256 chunks; slow consumers see
-        // RecvError::Lagged and resync from the next available chunk.
-        let (raw_pty_tx, _) = broadcast::channel::<Bytes>(256);
-        let raw_pty_history = Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP)));
-
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
@@ -1942,27 +1871,9 @@ impl PaneRuntime {
             let detection_content_seq = detection_content_seq.clone();
             let child_pid = child_pid.clone();
             let events = events.clone();
-            let raw_pty_tx_reader = raw_pty_tx.clone();
-            let raw_pty_history_reader = raw_pty_history.clone();
             let reported_cwd = reported_cwd.clone();
             let rt = tokio::runtime::Handle::current();
             let on_read = Box::new(move |bytes: &[u8]| {
-                // Fan out raw PTY bytes to RawPty-encoded subscribers BEFORE
-                // the emulator processes them. Hold the history lock for
-                // both append and broadcast send so a concurrent
-                // subscribe_raw_pty_with_replay observes the byte in either
-                // the snapshot OR the receiver, never both (would duplicate
-                // first frame on cmux reattach).
-                let chunk = Bytes::copy_from_slice(bytes);
-                if let Ok(mut hist) = raw_pty_history_reader.lock() {
-                    hist.append(&chunk);
-                    let _ = raw_pty_tx_reader.send(chunk);
-                } else {
-                    // Mutex poisoned — keep live forwarding working at the
-                    // cost of a possibly stale replay snapshot.
-                    let _ = raw_pty_tx_reader.send(chunk);
-                }
-
                 let shell_pid = child_pid.load(Ordering::Acquire);
                 let result =
                     terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
@@ -2383,48 +2294,9 @@ impl PaneRuntime {
             full_lifecycle_authority_active,
             detect_reset_notify,
             pending_release,
-            raw_pty_tx,
-            raw_pty_history,
             preserve_processes_on_drop: false,
             detect_handle,
         })
-    }
-
-    /// Subscribe to raw PTY bytes from this pane's master fd. Used by
-    /// RawPty-encoded clients that want to bypass herdr's internal emulator.
-    /// Slow consumers receive `RecvError::Lagged` and should resync.
-    /// Reachable via TerminalRuntime delegation; clippy can't see the
-    /// indirect call from the headless server attach path.
-    #[allow(dead_code)]
-    pub fn subscribe_raw_pty(&self) -> broadcast::Receiver<Bytes> {
-        self.raw_pty_tx.subscribe()
-    }
-
-    /// Subscribe to raw PTY bytes with the recent history prefix. The
-    /// returned snapshot is the tail of bytes already emitted (up to
-    /// the ring's capacity); the receiver delivers everything after.
-    /// Atomic w.r.t. the reader: snapshot capture and subscribe happen
-    /// while the history mutex is held, so the reader can't push a
-    /// byte that lands neither in `snapshot` nor in subsequent broadcast
-    /// deliveries. Used by `raw-pty-attach` to give cmux reattach
-    /// tmux-like behavior — the user sees the existing terminal state
-    /// instead of a blank pane.
-    pub fn subscribe_raw_pty_with_replay(&self) -> (Bytes, broadcast::Receiver<Bytes>) {
-        let guard = self
-            .raw_pty_history
-            .lock()
-            .expect("raw_pty_history mutex poisoned");
-        let snapshot = guard.snapshot();
-        let receiver = self.raw_pty_tx.subscribe();
-        drop(guard);
-        (snapshot, receiver)
-    }
-
-    /// Inject bytes onto the raw PTY broadcast tap for testing the
-    /// RawPty forwarder path without a real PTY.
-    #[cfg(test)]
-    pub(crate) fn send_raw_pty_for_test(&self, bytes: Bytes) -> usize {
-        self.raw_pty_tx.send(bytes).unwrap_or(0)
     }
 
     pub fn begin_graceful_release(&self, agent: Agent) {
@@ -2576,33 +2448,6 @@ impl PaneRuntime {
     pub fn snapshot_history(&self) -> Option<String> {
         let ansi = self.recent_unwrapped_ansi(usize::MAX);
         (!ansi.trim().is_empty()).then_some(ansi)
-    }
-
-    /// Snapshot the visible viewport as plain text. Independent of cmux:
-    /// reads libghostty-vt directly. One row per line, trailing whitespace
-    /// stripped, no ANSI / styling. Backs the `pane.screen_text` RPC.
-    pub fn visible_screen_text(&self) -> Option<String> {
-        self.terminal.visible_screen_text()
-    }
-
-    /// SHA-256 + dimensions of the visible viewport. Backs `pane.screen_hash`.
-    /// Cheaper than fetching `screen_text` when polling for "did it change?".
-    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
-        self.terminal.visible_screen_hash()
-    }
-
-    /// Region-limited screen read for `pane.screen_region`.
-    pub fn visible_screen_region(
-        &self,
-        last_rows: Option<u32>,
-        first_rows: Option<u32>,
-    ) -> Option<String> {
-        self.terminal.visible_screen_region(last_rows, first_rows)
-    }
-
-    /// Row-vector snapshot for `pane.screen_diff` and `pane.tui_probe`.
-    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
-        self.terminal.visible_screen_snapshot()
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
@@ -2861,10 +2706,6 @@ impl PaneRuntime {
                 full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
                 detect_reset_notify: Arc::new(Notify::new()),
                 pending_release: Arc::new(Mutex::new(None)),
-                raw_pty_tx: broadcast::channel::<Bytes>(16).0,
-                raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(
-                    RAW_PTY_HISTORY_DEFAULT_CAP,
-                ))),
                 preserve_processes_on_drop: true,
                 detect_handle: tokio::spawn(async {}).abort_handle(),
             },
@@ -3323,8 +3164,6 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
-            raw_pty_tx: broadcast::channel::<Bytes>(16).0,
-            raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
             preserve_processes_on_drop: true,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
@@ -3356,8 +3195,6 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
-            raw_pty_tx: broadcast::channel::<Bytes>(16).0,
-            raw_pty_history: Arc::new(Mutex::new(RawPtyHistory::new(RAW_PTY_HISTORY_DEFAULT_CAP))),
             preserve_processes_on_drop: true,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };

@@ -54,12 +54,6 @@ impl App {
             let follow_cwd = self.cwd_for_pane_in_workspace(ws_idx, target_pane_id);
             Some(self.resolve_new_terminal_cwd(follow_cwd))
         });
-        let requested_cwd = params
-            .cwd
-            .as_ref()
-            .map(std::path::PathBuf::from)
-            .or(inherited_cwd);
-        let split_cwd = Some(super::workspaces::resolve_spawn_cwd(requested_cwd));
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -123,14 +117,6 @@ impl App {
             event: EventKind::PaneCreated,
             data: EventData::PaneCreated { pane: pane.clone() },
         });
-        // cmux mirrors layout from LayoutChanged; emit after PaneCreated
-        // so subscribers can bind the new pane first, then redraw.
-        if let Some(tree) = self.layout_tree(ws_idx, target_tab_idx) {
-            self.emit_event(EventEnvelope {
-                event: EventKind::LayoutChanged,
-                data: EventData::LayoutChanged { tree },
-            });
-        }
 
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
@@ -1160,260 +1146,6 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_screen_text(&mut self, id: String, target: PaneTarget) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return pane_not_found(id, &target.pane_id);
-        };
-        let Some((pane, _)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return pane_not_found(id, &target.pane_id);
-        };
-        let text = pane.visible_screen_text().unwrap_or_default();
-        encode_success(
-            id,
-            ResponseResult::PaneScreenText {
-                pane_id: target.pane_id,
-                text,
-            },
-        )
-    }
-
-    pub(super) fn handle_pane_screen_hash(&mut self, id: String, target: PaneTarget) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return pane_not_found(id, &target.pane_id);
-        };
-        let Some((pane, _)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return pane_not_found(id, &target.pane_id);
-        };
-        let (hash, rows, columns) = pane
-            .visible_screen_hash()
-            .unwrap_or_else(|| (String::new(), 0, 0));
-        encode_success(
-            id,
-            ResponseResult::PaneScreenHash {
-                pane_id: target.pane_id,
-                hash,
-                rows,
-                columns,
-            },
-        )
-    }
-
-    pub(super) fn handle_pane_screen_region(
-        &mut self,
-        id: String,
-        params: crate::api::schema::PaneScreenRegionParams,
-    ) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
-        };
-        let Some((pane, _)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
-        };
-        let text = pane
-            .visible_screen_region(params.last_rows, params.first_rows)
-            .unwrap_or_default();
-        encode_success(
-            id,
-            ResponseResult::PaneScreenRegion {
-                pane_id: params.pane_id,
-                text,
-                last_rows: params.last_rows,
-                first_rows: params.first_rows,
-            },
-        )
-    }
-
-    pub(super) fn handle_pane_tui_probe(&mut self, id: String, target: PaneTarget) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return pane_not_found(id, &target.pane_id);
-        };
-        let Some((pane, _)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return pane_not_found(id, &target.pane_id);
-        };
-        let Some(snap) = pane.visible_screen_snapshot() else {
-            return encode_error(
-                id,
-                "internal_error",
-                "failed to snapshot screen".to_string(),
-            );
-        };
-        let probe = crate::api::tui_probe::classify(&snap.rows, snap.cursor_row, snap.cursor_col);
-        let last_line = if probe.kind == "unknown" {
-            snap.rows.last().cloned()
-        } else {
-            None
-        };
-        let last_lines: Vec<String> = snap
-            .rows
-            .iter()
-            .rev()
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        encode_success(
-            id,
-            ResponseResult::PaneTuiProbe {
-                pane_id: target.pane_id,
-                kind: probe.kind.to_string(),
-                rows: snap.row_count,
-                columns: snap.column_count,
-                cursor_row: snap.cursor_row,
-                cursor_col: snap.cursor_col,
-                indicators: probe.indicators,
-                last_line,
-                last_lines,
-            },
-        )
-    }
-
-    pub(super) fn handle_pane_screen_diff(
-        &mut self,
-        id: String,
-        params: crate::api::schema::PaneScreenDiffParams,
-    ) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
-        };
-        let snap = {
-            let Some((pane, _)) = self.lookup_runtime(ws_idx, pane_id) else {
-                return pane_not_found(id, &params.pane_id);
-            };
-            let Some(s) = pane.visible_screen_snapshot() else {
-                return encode_error(
-                    id,
-                    "internal_error",
-                    "failed to snapshot screen".to_string(),
-                );
-            };
-            s
-        };
-        let active_screen_label = format!("{:?}", snap.active_screen);
-        let cur_rows: Vec<String> = snap.rows.clone();
-        let total = cur_rows.len() as u32;
-        let key = (ws_idx, pane_id);
-        let cache = self.state.screen_diff_cache.get(&key).cloned();
-        let since_seq = params.since_seq.unwrap_or(0);
-
-        let alt_switched = cache
-            .as_ref()
-            .map(|c| c.active_screen != active_screen_label)
-            .unwrap_or(false);
-
-        let can_diff = since_seq != 0
-            && cache.is_some()
-            && !alt_switched
-            && cache
-                .as_ref()
-                .map(|c| c.rows.len() == cur_rows.len())
-                .unwrap_or(false);
-
-        let mut changed_indices: Vec<u32> = Vec::new();
-        if can_diff {
-            if let Some(prev) = cache.as_ref() {
-                for (i, row) in cur_rows.iter().enumerate() {
-                    if prev.rows.get(i) != Some(row) {
-                        changed_indices.push(i as u32);
-                    }
-                }
-            }
-        }
-
-        // Generate a fresh seq whenever rows change OR client passed since=0.
-        let next_seq = match (&cache, can_diff) {
-            (Some(prev), true) if changed_indices.is_empty() => prev.state_seq,
-            (Some(prev), _) => prev.state_seq.wrapping_add(1),
-            (None, _) => 1,
-        };
-
-        // Update cache with new snapshot.
-        self.upsert_screen_diff_cache(
-            key,
-            crate::app::ScreenDiffCacheEntry {
-                rows: cur_rows.clone(),
-                state_seq: next_seq,
-                active_screen: active_screen_label.clone(),
-            },
-        );
-
-        if can_diff && changed_indices.is_empty() {
-            return encode_success(
-                id,
-                ResponseResult::PaneScreenDiff {
-                    pane_id: params.pane_id,
-                    state_seq: next_seq,
-                    changed: false,
-                    full: None,
-                    alt_screen_switched: None,
-                    rows: total,
-                    text: None,
-                    dirty: vec![],
-                },
-            );
-        }
-
-        let dirty_ratio_limit = ((total as usize) * 60 / 100).max(1);
-        let use_full = !can_diff || changed_indices.len() > dirty_ratio_limit;
-
-        if use_full {
-            let mut joined = cur_rows.join("\n");
-            if !cur_rows.is_empty() {
-                joined.push('\n');
-            }
-            return encode_success(
-                id,
-                ResponseResult::PaneScreenDiff {
-                    pane_id: params.pane_id,
-                    state_seq: next_seq,
-                    changed: true,
-                    full: Some(true),
-                    alt_screen_switched: if alt_switched { Some(true) } else { None },
-                    rows: total,
-                    text: Some(joined),
-                    dirty: vec![],
-                },
-            );
-        }
-
-        let dirty: Vec<crate::api::schema::PaneScreenDiffRow> = changed_indices
-            .iter()
-            .map(|&y| crate::api::schema::PaneScreenDiffRow {
-                y,
-                text: cur_rows[y as usize].clone(),
-            })
-            .collect();
-        encode_success(
-            id,
-            ResponseResult::PaneScreenDiff {
-                pane_id: params.pane_id,
-                state_seq: next_seq,
-                changed: true,
-                full: Some(false),
-                alt_screen_switched: None,
-                rows: total,
-                text: None,
-                dirty,
-            },
-        )
-    }
-
-    fn upsert_screen_diff_cache(
-        &mut self,
-        key: (usize, crate::layout::PaneId),
-        entry: crate::app::ScreenDiffCacheEntry,
-    ) {
-        if !self.state.screen_diff_cache.contains_key(&key) {
-            self.state.screen_diff_cache_order.push(key);
-        }
-        self.state.screen_diff_cache.insert(key, entry);
-        while self.state.screen_diff_cache_order.len() > crate::app::SCREEN_DIFF_CACHE_LIMIT {
-            let evict = self.state.screen_diff_cache_order.remove(0);
-            self.state.screen_diff_cache.remove(&evict);
-        }
-    }
-
     pub(super) fn handle_pane_read(&mut self, id: String, params: PaneReadParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
@@ -1732,10 +1464,6 @@ impl App {
         }
         let workspace_snapshot = self.workspace_info(ws_idx);
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
-        // Capture the pane's tab BEFORE close so we can emit
-        // LayoutChanged afterwards — once close_pane runs the pane
-        // is gone and find_tab_index_for_pane returns None.
-        let tab_idx_pre_close = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id);
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err(pane_not_found(id, &target.pane_id));
@@ -1772,17 +1500,6 @@ impl App {
                     workspace_id,
                 },
             });
-            // cmux follows layout changes through LayoutChanged. Use
-            // the pre-close tab_idx since the pane is no longer
-            // discoverable via find_tab_index_for_pane.
-            if let Some(tab_idx) = tab_idx_pre_close {
-                if let Some(tree) = self.layout_tree(ws_idx, tab_idx) {
-                    self.emit_event(EventEnvelope {
-                        event: EventKind::LayoutChanged,
-                        data: EventData::LayoutChanged { tree },
-                    });
-                }
-            }
         }
 
         Ok(())

@@ -823,124 +823,6 @@ pub fn run_client() -> io::Result<()> {
     )
 }
 
-/// Bridges the herdr display socket's RawPty mode to plain stdio.
-///
-/// Designed to be spawned as a subprocess by an external GUI client
-/// (e.g. cmux): the GUI doesn't speak bincode, but this helper does.
-/// On stdout the helper writes raw PTY bytes — the same bytes that
-/// would appear at /dev/ptmx in a local shell — so a downstream
-/// terminal emulator (Ghostty) can render them with full fidelity.
-/// Stdin keystrokes flow back as `ClientMessage::Input`.
-///
-/// PoC scope: no resize, no terminal raw-mode setup. Initial size is
-/// fixed at the cols/rows passed in. A future patch will add a side
-/// channel (control fd) for SIGWINCH-style notifications.
-#[cfg(unix)]
-pub fn run_raw_pty_attach(
-    terminal_id: String,
-    takeover: bool,
-    cols: u16,
-    rows: u16,
-) -> io::Result<()> {
-    use std::os::unix::net::UnixStream;
-    let socket_path = client_socket_path();
-    let mut stream = UnixStream::connect(&socket_path).map_err(|err| {
-        eprintln!("herdr: connect: {err}");
-        err
-    })?;
-
-    let hello = ClientMessage::Hello {
-        version: PROTOCOL_VERSION,
-        cols,
-        rows,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        requested_encoding: RenderEncoding::RawPty,
-        keybindings: crate::protocol::ClientKeybindings::Server,
-        launch_mode: crate::protocol::ClientLaunchMode::TerminalAttach,
-    };
-    protocol::write_message(&mut stream, &hello)
-        .map_err(|e| io::Error::other(format!("hello write: {e}")))?;
-    let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
-        .map_err(|e| io::Error::other(format!("welcome read: {e}")))?;
-    match &welcome {
-        ServerMessage::Welcome {
-            error: Some(reason),
-            ..
-        } => {
-            return Err(io::Error::other(format!(
-                "server rejected handshake: {reason}"
-            )));
-        }
-        ServerMessage::Welcome { encoding, .. } if !matches!(encoding, RenderEncoding::RawPty) => {
-            return Err(io::Error::other(format!(
-                "server downgraded encoding to {:?}, expected RawPty",
-                encoding
-            )));
-        }
-        ServerMessage::Welcome { .. } => {}
-        other => {
-            return Err(io::Error::other(format!(
-                "expected Welcome, got {:?}",
-                other
-            )));
-        }
-    }
-
-    let attach = ClientMessage::AttachTerminal {
-        terminal_id,
-        takeover,
-    };
-    protocol::write_message(&mut stream, &attach)
-        .map_err(|e| io::Error::other(format!("attach write: {e}")))?;
-
-    // Spawn stdin reader on a background thread that forwards keystrokes
-    // to the server as ClientMessage::Input frames.
-    let mut input_stream = stream.try_clone()?;
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match io::Read::read(&mut io::stdin().lock(), &mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let msg = ClientMessage::Input {
-                        data: buf[..n].to_vec(),
-                    };
-                    if protocol::write_message(&mut input_stream, &msg).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // Main thread: pull RawPtyChunk (and other) frames from the socket
-    // and dump bytes to stdout. ServerShutdown ends the loop.
-    let mut stdout = io::stdout().lock();
-    while let Ok(msg) = protocol::read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
-        match msg {
-            ServerMessage::RawPtyChunk { bytes } => {
-                if stdout.write_all(&bytes).is_err() {
-                    break;
-                }
-                let _ = stdout.flush();
-            }
-            ServerMessage::ServerShutdown { reason } => {
-                if let Some(r) = reason {
-                    eprintln!("herdr: server shutdown: {r}");
-                }
-                break;
-            }
-            _ => {
-                // ignore Frame/Terminal/Notify/Clipboard/etc — we negotiated
-                // RawPty, so these aren't expected here.
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Runs a direct terminal attach client.
 #[cfg(unix)]
 pub fn run_terminal_attach(terminal_id: String, takeover: bool) -> io::Result<()> {
@@ -1674,11 +1556,6 @@ async fn run_client_loop(
                 }
                 ServerMessage::Welcome { .. } => {
                     debug!("received unexpected Welcome in main loop");
-                }
-                ServerMessage::RawPtyChunk { .. } => {
-                    // The TUI client never negotiates RawPty. Receiving one
-                    // here means the server misrouted; ignore.
-                    debug!("received unexpected RawPtyChunk in main loop");
                 }
             },
             ClientLoopEvent::ServerDisconnected => {

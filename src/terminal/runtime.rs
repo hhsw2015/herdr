@@ -226,26 +226,6 @@ impl TerminalRuntime {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
     }
 
-    /// Snapshot existing raw-pty bytes plus a live broadcast subscription.
-    /// Used by raw-pty-attach to give cmux reattach tmux-like behavior:
-    /// the user sees the current terminal state on attach instead of a
-    /// blank pane. Atomic snapshot+subscribe via the inner runtime.
-    pub fn subscribe_raw_pty_with_replay(
-        &self,
-    ) -> (bytes::Bytes, tokio::sync::broadcast::Receiver<bytes::Bytes>) {
-        self.0.subscribe_raw_pty_with_replay()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn send_raw_pty_for_test(&self, bytes: bytes::Bytes) -> usize {
-        self.0.send_raw_pty_for_test(bytes)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_pane_runtime(runtime: crate::pane::PaneRuntime) -> Self {
-        Self(runtime)
-    }
-
     #[cfg(unix)]
     pub fn nudge_child_redraw_after_handoff(&self) {
         self.0.nudge_child_redraw_after_handoff();
@@ -325,26 +305,6 @@ impl TerminalRuntime {
 
     pub fn snapshot_history(&self) -> Option<String> {
         self.0.snapshot_history()
-    }
-
-    pub fn visible_screen_text(&self) -> Option<String> {
-        self.0.visible_screen_text()
-    }
-
-    pub fn visible_screen_hash(&self) -> Option<(String, u16, u16)> {
-        self.0.visible_screen_hash()
-    }
-
-    pub fn visible_screen_region(
-        &self,
-        last_rows: Option<u32>,
-        first_rows: Option<u32>,
-    ) -> Option<String> {
-        self.0.visible_screen_region(last_rows, first_rows)
-    }
-
-    pub fn visible_screen_snapshot(&self) -> Option<crate::ghostty::VisibleScreenSnapshot> {
-        self.0.visible_screen_snapshot()
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {

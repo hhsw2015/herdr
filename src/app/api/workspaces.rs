@@ -208,32 +208,6 @@ fn workspace_not_found(id: String, workspace_id: &str) -> String {
     )
 }
 
-/// Resolve a spawn cwd that's actually a directory we can chdir into.
-/// Caller-supplied path wins iff it exists; otherwise fall back through
-/// $HOME → daemon's current_dir → '/'. Without this, an SSH client that
-/// passes a path from its own filesystem (e.g. cmux on macOS sending
-/// `/Users/<me>` to a Linux daemon) hits libghostty-vt's `ghostty error
-/// -2` because the spawn step can't chdir. Same fallback is used by
-/// pane.split / tab.create — exposed via `pub(super)` so those handlers
-/// (and their tests) can share one implementation.
-pub(super) fn resolve_spawn_cwd(requested: Option<PathBuf>) -> PathBuf {
-    if let Some(path) = requested {
-        if path.is_dir() {
-            return path;
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        if home.is_dir() {
-            return home;
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        return cwd;
-    }
-    PathBuf::from("/")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

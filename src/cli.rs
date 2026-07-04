@@ -73,8 +73,6 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "wait" => run_wait_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
-        "raw-pty-attach" => raw_pty_attach(&args[2..])?,
-        "api-bridge" => api_bridge(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 
@@ -827,7 +825,7 @@ fn wait_agent_status(args: &[String]) -> std::io::Result<i32> {
             id: "cli:wait:agent-status".into(),
             method: Method::EventsSubscribe(crate::api::schema::EventsSubscribeParams {
                 subscriptions: vec![Subscription::PaneAgentStatusChanged {
-                    pane_id: Some(pane_id),
+                    pane_id,
                     agent_status: Some(agent_status),
                 }],
             }),

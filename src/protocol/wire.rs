@@ -41,10 +41,6 @@ pub enum RenderEncoding {
     SemanticFrame,
     /// Send already-diffed terminal ANSI byte streams.
     TerminalAnsi,
-    /// Send raw PTY bytes from the pane's master fd, bypassing herdr's
-    /// internal terminal emulator. Only meaningful in TerminalAttach mode.
-    /// Clients receive ServerMessage::RawPtyChunk frames.
-    RawPty,
 }
 
 /// Keybinding profile requested by an attached app client.
@@ -659,13 +655,6 @@ pub enum ServerMessage {
     MouseCapture {
         /// True when Herdr mouse UI is enabled or the focused pane app requests mouse reporting.
         enabled: bool,
-    },
-
-    /// Raw PTY bytes from a pane's master fd. Only sent to clients that
-    /// negotiated `RenderEncoding::RawPty` and are attached via `AttachTerminal`.
-    RawPtyChunk {
-        /// Bytes read directly from the PTY master, with original escape codes intact.
-        bytes: Vec<u8>,
     },
 }
 

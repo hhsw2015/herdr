@@ -107,15 +107,10 @@ impl ActiveSubscription {
         api_tx: &ApiRequestSender,
         event_hub: &EventHub,
     ) -> Result<Self, ErrorResponse> {
-        // Use the hub's high-water mark so a fresh subscription only sees
-        // events emitted AFTER it starts. Otherwise cmux-style reattach
-        // replays every cached event from the previous session before
-        // settling on current state.
-        let last_sequence = event_hub.current_sequence();
         match subscription {
             Subscription::WorkspaceCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceCreated,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::WorkspaceUpdated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceUpdated,
@@ -131,15 +126,11 @@ impl ActiveSubscription {
             })),
             Subscription::WorkspaceClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceClosed,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::WorkspaceFocused {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceFocused,
-                last_sequence,
-            })),
-            Subscription::WorkspaceReordered {} => Ok(Self::Event(ActiveEventSubscription {
-                event_kind: crate::api::schema::EventKind::WorkspaceReordered,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::WorktreeCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorktreeCreated,
@@ -155,23 +146,19 @@ impl ActiveSubscription {
             })),
             Subscription::TabCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabCreated,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::TabClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabClosed,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::TabFocused {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabFocused,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::TabRenamed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabRenamed,
-                last_sequence,
-            })),
-            Subscription::TabReordered {} => Ok(Self::Event(ActiveEventSubscription {
-                event_kind: crate::api::schema::EventKind::TabReordered,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::TabMoved {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::TabMoved,
@@ -179,15 +166,15 @@ impl ActiveSubscription {
             })),
             Subscription::PaneCreated {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneCreated,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::PaneClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneClosed,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::PaneFocused {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneFocused,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::PaneMoved {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneMoved,
@@ -195,19 +182,11 @@ impl ActiveSubscription {
             })),
             Subscription::PaneExited {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneExited,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::PaneAgentDetected {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::PaneAgentDetected,
-                last_sequence,
-            })),
-            Subscription::PaneZoomed {} => Ok(Self::Event(ActiveEventSubscription {
-                event_kind: crate::api::schema::EventKind::PaneZoomed,
-                last_sequence,
-            })),
-            Subscription::LayoutChanged {} => Ok(Self::Event(ActiveEventSubscription {
-                event_kind: crate::api::schema::EventKind::LayoutChanged,
-                last_sequence,
+                last_sequence: 0,
             })),
             Subscription::PaneOutputMatched {
                 pane_id,
@@ -281,8 +260,8 @@ impl ActiveSubscription {
                         last_status: Some(last_status),
                         last_presentation: Some(last_presentation),
                         last_sequence,
-                        initial_event: None,
-                        request_prefix: String::new(),
+                        initial_event,
+                        request_prefix: format!("{request_id}:sub:{index}"),
                     },
                 )))
             }

@@ -643,55 +643,6 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn swap_panes_exchanges_two_leaves() {
-        let (mut layout, _root) = TileLayout::new();
-        let p2 = layout.split_focused(Direction::Horizontal);
-        let p3 = layout.split_focused(Direction::Vertical);
-        let ids_before = layout.pane_ids();
-        let _root = ids_before[0];
-        assert!(layout.swap_panes(p2, p3));
-        let ids_after = layout.pane_ids();
-        assert_eq!(ids_after.len(), ids_before.len());
-        assert!(ids_after.contains(&p2));
-        assert!(ids_after.contains(&p3));
-        // Position must have changed - p2 and p3 swap places in tree order.
-        assert_ne!(
-            ids_before.iter().position(|id| *id == p2),
-            ids_after.iter().position(|id| *id == p2)
-        );
-    }
-
-    #[test]
-    fn swap_panes_rejects_unknown_or_identical() {
-        let (mut layout, root) = TileLayout::new();
-        let other = PaneId::from_raw(99_999);
-        assert!(!layout.swap_panes(root, root));
-        assert!(!layout.swap_panes(root, other));
-    }
-
-    #[test]
-    fn set_ratio_at_validates_path() {
-        let (mut layout, _root) = TileLayout::new();
-        layout.split_focused(Direction::Horizontal);
-        layout.set_ratio_at(&[], 0.7);
-        // Out-of-tree paths are silently ignored (return `()` after the upstream refactor).
-        layout.set_ratio_at(&[false, false], 0.7);
-        let (mut single, _) = TileLayout::new();
-        single.set_ratio_at(&[], 0.5);
-    }
-
-    #[test]
-    fn focus_pane_rejects_unknown_id() {
-        let (mut layout, root) = TileLayout::new();
-        let other = PaneId::from_raw(99_999);
-        layout.focus_pane(root);
-        assert_eq!(layout.focused(), root);
-        layout.focus_pane(other);
-        // Unknown ids leave the previous focus unchanged.
-        assert_eq!(layout.focused(), root);
-    }
-
     fn pane(id: u32) -> PaneId {
         PaneId::from_raw(id)
     }

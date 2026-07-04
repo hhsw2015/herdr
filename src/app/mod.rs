@@ -74,17 +74,6 @@ pub(crate) struct OverlayPaneState {
     temp_files: Vec<std::path::PathBuf>,
 }
 
-/// Cached row snapshot used by `pane.screen_diff` to compute incremental
-/// updates without the agent shipping the prior text back. Bounded LRU.
-#[derive(Debug, Clone)]
-pub(crate) struct ScreenDiffCacheEntry {
-    pub rows: Vec<String>,
-    pub state_seq: u64,
-    pub active_screen: String,
-}
-
-pub(crate) const SCREEN_DIFF_CACHE_LIMIT: usize = 64;
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PaneClickState {
     pane_id: crate::layout::PaneId,
@@ -528,10 +517,6 @@ impl App {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
-            pending_events: Vec::new(),
-            pending_layout_changes: Vec::new(),
-            screen_diff_cache: std::collections::HashMap::new(),
-            screen_diff_cache_order: Vec::new(),
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -884,10 +869,6 @@ impl App {
             if self.drain_internal_events() {
                 needs_render = true;
             }
-            // Forward TUI-queued mutation events into the API event hub
-            // so external subscribers (cmux, etc.) see the same changes
-            // a TUI user just made.
-            self.drain_pending_state_events();
             if self.drain_api_requests() {
                 needs_render = true;
             }

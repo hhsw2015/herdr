@@ -164,28 +164,7 @@ impl App {
         let root_pane = self.state.workspaces[ws_idx].tabs[idx].root_pane.raw();
         crate::logging::tab_created(&workspace_id, &tab_id, root_pane);
         self.schedule_session_save();
-        // Mirror api.rs `tab.create`: broadcast TabCreated so cmux
-        // sees the new tab in its sidebar without polling.
-        let tab_info = self.tab_info(ws_idx, idx);
-        if let Some(tab) = tab_info {
-            self.state
-                .pending_events
-                .push(crate::api::schema::EventEnvelope {
-                    event: crate::api::schema::EventKind::TabCreated,
-                    data: crate::api::schema::EventData::TabCreated { tab },
-                });
-        }
         Ok(idx)
-    }
-
-    fn emit_workspace_created(&mut self, ws_idx: usize) {
-        let info = self.workspace_info(ws_idx);
-        self.state
-            .pending_events
-            .push(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::WorkspaceCreated,
-                data: crate::api::schema::EventData::WorkspaceCreated { workspace: info },
-            });
     }
 
     pub(crate) fn create_workspace_with_options(
@@ -235,9 +214,6 @@ impl App {
         let workspace_id = self.state.workspaces[idx].id.clone();
         let root_pane = self.state.workspaces[idx].tabs[0].root_pane.raw();
         crate::logging::workspace_created(&workspace_id, root_pane);
-        // Mirror api.rs `workspace.create`: broadcast WorkspaceCreated
-        // so cmux's sidebar list picks up the new entry without polling.
-        self.emit_workspace_created(idx);
         if focus || self.state.active.is_none() {
             self.state.switch_workspace(idx);
             self.state.mode = Mode::Terminal;
@@ -388,23 +364,6 @@ impl App {
         self.pane_info(ws_idx, tab.root_pane)
     }
 
-    pub(super) fn layout_tree(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Option<crate::api::schema::LayoutTree> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs.get(tab_idx)?;
-        let root = layout_node_to_wire(self, ws_idx, tab.layout.root())?;
-        let focused_pane_id = self.public_pane_id(ws_idx, tab.layout.focused());
-        Some(crate::api::schema::LayoutTree {
-            workspace_id: self.public_workspace_id(ws_idx),
-            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
-            root,
-            focused_pane_id,
-        })
-    }
-
     pub(super) fn pane_info(
         &self,
         ws_idx: usize,
@@ -487,36 +446,6 @@ impl App {
                     checkout_path: space.checkout_path.display().to_string(),
                     is_linked_worktree: space.is_linked_worktree,
                 }),
-        }
-    }
-}
-
-fn layout_node_to_wire(
-    app: &App,
-    ws_idx: usize,
-    node: &crate::layout::Node,
-) -> Option<crate::api::schema::LayoutNode> {
-    use crate::api::schema::{LayoutNode, LayoutSplitDirection};
-    match node {
-        crate::layout::Node::Pane(pane_id) => Some(LayoutNode::Pane {
-            pane_id: app.public_pane_id(ws_idx, *pane_id)?,
-        }),
-        crate::layout::Node::Split {
-            direction,
-            ratio,
-            first,
-            second,
-        } => {
-            let direction = match direction {
-                ratatui::layout::Direction::Horizontal => LayoutSplitDirection::Horizontal,
-                ratatui::layout::Direction::Vertical => LayoutSplitDirection::Vertical,
-            };
-            Some(LayoutNode::Split {
-                direction,
-                ratio: *ratio,
-                first: Box::new(layout_node_to_wire(app, ws_idx, first)?),
-                second: Box::new(layout_node_to_wire(app, ws_idx, second)?),
-            })
         }
     }
 }
