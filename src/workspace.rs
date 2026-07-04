@@ -383,7 +383,6 @@ impl Workspace {
         true
     }
 
-    #[cfg(test)]
     pub fn close_active_tab(&mut self) -> bool {
         self.close_tab(self.active_tab)
     }
@@ -565,7 +564,6 @@ impl Workspace {
     }
 
     /// Close the focused pane. Returns true if the workspace should close.
-    #[cfg(test)]
     pub fn close_focused(&mut self) -> bool {
         let pane_count = self
             .active_tab()

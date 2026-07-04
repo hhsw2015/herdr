@@ -1885,7 +1885,7 @@ impl AppState {
             .collect::<Vec<_>>();
         let should_close_workspace = active
             .and_then(|i| self.workspaces.get_mut(i))
-            .is_some_and(|ws| ws.layout.close_focused());
+            .is_some_and(|ws| ws.close_focused());
         if should_close_workspace {
             if let Some(active) = active {
                 self.selected = active;
@@ -1950,7 +1950,7 @@ impl AppState {
             };
             let workspace_id = ws.id.clone();
             let closing_tab_id = format!("{}:{}", workspace_id, ws.active_tab + 1);
-            // close_active_tab handled via layout mutation elsewhere
+            ws.close_active_tab();
             self.remove_unattached_terminal_ids(terminal_ids);
             // tab_closed logged elsewhere in fork
             self.tab_scroll_follow_active = true;
