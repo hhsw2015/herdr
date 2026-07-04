@@ -683,7 +683,7 @@ pub struct PaneExpectErrorDetail {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum PaneExpectStep {
     Send {
@@ -738,7 +738,7 @@ pub struct PaneWaitForKindParams {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum PaneWaitForKindTarget {
     Single(String),
