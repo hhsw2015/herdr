@@ -281,8 +281,10 @@ impl ActiveSubscription {
                         last_status: Some(last_status),
                         last_presentation: Some(last_presentation),
                         last_sequence,
-                    }))
-                }
+                        initial_event: None,
+                        request_prefix: String::new(),
+                    },
+                )))
             }
         }
     }
