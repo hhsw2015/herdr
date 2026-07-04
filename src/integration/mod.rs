@@ -386,6 +386,7 @@ fn agent_version_requirement(
         }),
         _ => None,
             crate::api::schema::IntegrationTarget::Devin => Default::default(),
+        _ => Default::default(),
     }
 }
 
@@ -616,6 +617,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
             crate::api::schema::IntegrationTarget::Devin => Default::default(),
+        _ => Default::default(),
     };
 
     if let Some(warning) = version_warning {
@@ -917,6 +919,7 @@ pub(crate) fn uninstall_target(
             messages
         }
             crate::api::schema::IntegrationTarget::Devin => Default::default(),
+        _ => Default::default(),
     };
 
     crate::logging::integration_action("uninstall", integration_target_label(target), "ok");
@@ -940,6 +943,7 @@ pub(crate) fn integration_target_label(
         crate::api::schema::IntegrationTarget::Qodercli => "qodercli",
         crate::api::schema::IntegrationTarget::Cursor => "cursor",
             crate::api::schema::IntegrationTarget::Devin => Default::default(),
+        _ => Default::default(),
     }
 }
 
@@ -964,6 +968,7 @@ fn integration_target_command_names(
         crate::api::schema::IntegrationTarget::Qodercli => qodercli_command_names(),
         crate::api::schema::IntegrationTarget::Cursor => cursor_command_names(),
             crate::api::schema::IntegrationTarget::Devin => Default::default(),
+        _ => Default::default(),
     }
 }
 
@@ -1021,6 +1026,7 @@ fn integration_target_install_layout_available(
         crate::api::schema::IntegrationTarget::Hermes => hermes_install_layout_available(),
         _ => false,
             crate::api::schema::IntegrationTarget::Devin => Default::default(),
+        _ => Default::default(),
     }
 }
 
