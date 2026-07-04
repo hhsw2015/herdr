@@ -203,6 +203,39 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
+    // ========================================================
+    // cmux fork additions (P68 port)
+    // ========================================================
+    #[serde(rename = "pane.screen_text")]
+    PaneScreenText(PaneTarget),
+    #[serde(rename = "pane.screen_hash")]
+    PaneScreenHash(PaneTarget),
+    #[serde(rename = "pane.screen_region")]
+    PaneScreenRegion(PaneScreenRegionParams),
+    #[serde(rename = "pane.screen_diff")]
+    PaneScreenDiff(PaneScreenDiffParams),
+    #[serde(rename = "pane.tui_probe")]
+    PaneTuiProbe(PaneTarget),
+    #[serde(rename = "pane.expect")]
+    PaneExpect(PaneExpectParams),
+    #[serde(rename = "pane.wait_for_text")]
+    PaneWaitForText(PaneWaitForTextParams),
+    #[serde(rename = "pane.wait_for_idle")]
+    PaneWaitForIdle(PaneWaitForIdleParams),
+    #[serde(rename = "pane.wait_for_kind")]
+    PaneWaitForKind(PaneWaitForKindParams),
+    #[serde(rename = "pane.wait_for_cursor")]
+    PaneWaitForCursor(PaneWaitForCursorParams),
+    #[serde(rename = "pane.wait_for_screen_change")]
+    PaneWaitForScreenChange(PaneWaitForScreenChangeParams),
+    #[serde(rename = "pane.set_zoom")]
+    PaneSetZoom(PaneSetZoomParams),
+    #[serde(rename = "pane.set_split_ratio")]
+    PaneSetSplitRatio(PaneSetSplitRatioParams),
+    #[serde(rename = "pane.cmux_swap")]
+    PaneCmuxSwap(PaneCmuxSwapParams),
+    #[serde(rename = "pane.cmux_resize")]
+    PaneCmuxResize(PaneCmuxResizeParams),
 }
 
 #[cfg(test)]

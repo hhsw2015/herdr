@@ -353,6 +353,21 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PluginPaneOpen(_) => "plugin.pane.open",
         Method::PluginPaneFocus(_) => "plugin.pane.focus",
         Method::PluginPaneClose(_) => "plugin.pane.close",
+        Method::PaneScreenText(_) => "pane.screen_text",
+        Method::PaneScreenHash(_) => "pane.screen_hash",
+        Method::PaneScreenRegion(_) => "pane.screen_region",
+        Method::PaneScreenDiff(_) => "pane.screen_diff",
+        Method::PaneTuiProbe(_) => "pane.tui_probe",
+        Method::PaneExpect(_) => "pane.expect",
+        Method::PaneWaitForText(_) => "pane.wait_for_text",
+        Method::PaneWaitForIdle(_) => "pane.wait_for_idle",
+        Method::PaneWaitForKind(_) => "pane.wait_for_kind",
+        Method::PaneWaitForCursor(_) => "pane.wait_for_cursor",
+        Method::PaneWaitForScreenChange(_) => "pane.wait_for_screen_change",
+        Method::PaneSetZoom(_) => "pane.set_zoom",
+        Method::PaneSetSplitRatio(_) => "pane.set_split_ratio",
+        Method::PaneCmuxSwap(_) => "pane.cmux_swap",
+        Method::PaneCmuxResize(_) => "pane.cmux_resize",
     }
 }
 
