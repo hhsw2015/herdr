@@ -108,6 +108,7 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
             cwd,
             focus,
             label,
+            env: Default::default(),
         }),
     })?)
 }

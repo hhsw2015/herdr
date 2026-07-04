@@ -562,6 +562,7 @@ fn parse_pane_split_args(args: &[String]) -> Result<PaneSplitParams, String> {
         ratio,
         cwd,
         focus,
+        env: Default::default(),
     })
 }
 

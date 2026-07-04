@@ -346,6 +346,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
             split,
             focus,
             argv: args[separator + 1..].to_vec(),
+            env: Default::default(),
         }),
     })?)
 }

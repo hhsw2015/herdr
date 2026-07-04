@@ -79,7 +79,7 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
 
     super::print_response(&super::send_request(&Request {
         id: "cli:workspace:create".into(),
-        method: Method::WorkspaceCreate(WorkspaceCreateParams { cwd, focus, label }),
+        method: Method::WorkspaceCreate(WorkspaceCreateParams { cwd, focus, label, env: Default::default() }),
     })?)
 }
 
