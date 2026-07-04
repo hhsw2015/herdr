@@ -97,7 +97,7 @@ impl InputState {
     }
 
     pub fn plain_page_keys_use_host_scrollback(self) -> bool {
-        false
+        !self.alternate_screen && !self.mouse_reporting_enabled() && !self.application_cursor
     }
 }
 
